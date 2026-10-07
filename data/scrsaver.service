@@ -1,0 +1,19 @@
+# Template only. install.sh / the app write the real unit to
+# ~/.config/systemd/user/scrsaver.service with an absolute ExecStart.
+[Unit]
+Description=SCR Saver
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env scrsaver --background
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillSignal=SIGTERM
+Environment=PYTHONUNBUFFERED=1
+SyslogIdentifier=scrsaver
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=SCR Saver
+Comment=Play Windows .scr screensavers when idle
+Exec=scrsaver
+Icon=scrsaver
+Terminal=false
+Categories=Utility;
+StartupNotify=false
