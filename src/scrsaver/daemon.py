@@ -84,6 +84,13 @@ class SaverController(QObject):
             skip_outputs=skip,
             require_screen=manual,
             audio_source=audio_source,
+            tile=bool(self.cfg.tile_into_free_space),
+            hide_decorations=bool(
+                self.cfg.tile_into_free_space and self.cfg.tile_hide_decorations
+            ),
+            scale_content=bool(
+                self.cfg.tile_into_free_space and self.cfg.tile_scale_content
+            ),
         )
 
     def stop_playback(self) -> None:

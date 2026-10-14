@@ -92,6 +92,9 @@ class AppConfig:
     one_audio_source: bool = False
     audio_source_display: str = "primary"
     skip_fullscreen_video: bool = False
+    tile_into_free_space: bool = False
+    tile_hide_decorations: bool = False
+    tile_scale_content: bool = False
     fps_limit: int = 0
     managed_prefixes: list[ManagedPrefix] = field(default_factory=list)
     screensavers: list[ScreensaverEntry] = field(default_factory=list)
@@ -265,6 +268,9 @@ def load_config() -> AppConfig:
         one_audio_source=bool(raw.get("one_audio_source", False)),
         audio_source_display=str(raw.get("audio_source_display") or "primary"),
         skip_fullscreen_video=bool(raw.get("skip_fullscreen_video", False)),
+        tile_into_free_space=bool(raw.get("tile_into_free_space", False)),
+        tile_hide_decorations=bool(raw.get("tile_hide_decorations", False)),
+        tile_scale_content=bool(raw.get("tile_scale_content", False)),
         fps_limit=_coerce_int(raw.get("fps_limit"), 0, 0, 120),
         managed_prefixes=managed,
         screensavers=entries,

@@ -7,7 +7,7 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from PyQt6.QtCore import QByteArray, QCoreApplication
+from PyQt6.QtCore import QByteArray, QCoreApplication, QTimer
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
@@ -41,13 +41,20 @@ def main(argv: list[str] | None = None) -> int:
     if server is None:
         return 0
 
+    from .crash import harvest_previous_crash, install_crash_handlers, mark_clean_exit, prompt_pending_crashes
+
+    harvest_previous_crash()
+    install_crash_handlers()
+
     cfg = load_config()
     save_config(cfg)
     controller = SaverController(cfg)
     window = MainWindow(controller, show_window=not args.background)
     server.newConnection.connect(lambda: _on_second_instance(server, window))
+    QTimer.singleShot(800, lambda: prompt_pending_crashes(window))
 
     def _handle_signal(_signum, _frame) -> None:
+        mark_clean_exit()
         window.quit_app()
 
     signal.signal(signal.SIGINT, _handle_signal)
@@ -63,11 +70,13 @@ def main(argv: list[str] | None = None) -> int:
                     break
         if entry is None:
             log.error("No screensaver matching %s", target)
+            mark_clean_exit()
             return 1
         window.show()
         window.controller.play_entry(entry.id, manual=True)
 
     code = app.exec()
+    mark_clean_exit()
     controller.shutdown()
     return int(code)
 

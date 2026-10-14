@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -19,6 +20,7 @@ log = logging.getLogger(__name__)
 WINDOW_PLACE_ATTEMPTS = 40
 WINDOW_PLACE_INTERVAL_MS = 250
 GRACE_SECONDS = 2.0
+GAMESCOPE_WMCLASS = "scrsaver-gs"
 
 
 @dataclass
@@ -29,6 +31,11 @@ class ScreenTarget:
     width: int
     height: int
     desktop: str
+    tiled: bool = False
+    undecorated: bool = False
+    scale_content: bool = False
+    content_width: int = 0
+    content_height: int = 0
 
 
 class Player(QObject):
@@ -103,19 +110,16 @@ class Player(QObject):
         skip_outputs: set[str] | None = None,
         require_screen: bool = False,
         audio_source: str = "",
+        tile: bool = False,
+        hide_decorations: bool = False,
+        scale_content: bool = False,
     ) -> None:
         kind = getattr(entry, "launch_kind", "") or ""
         if kind == LAUNCH_STEAM or entry.is_steam():
             if skip_outputs:
                 targets = screen_targets(display_mode)
                 targets = [target for target in targets if target.name not in skip_outputs]
-                if not targets:
-                    if require_screen:
-                        self.failed.emit(
-                            "No available display. A fullscreen video may be using the selected screen."
-                        )
-                    else:
-                        log.info("Not starting screensaver; no free display")
+                if not _have_targets(targets, require_screen, tile, self.failed.emit):
                     return
             self._play_steam(entry)
             return
@@ -127,11 +131,17 @@ class Player(QObject):
         targets = screen_targets(display_mode)
         if skip_outputs:
             targets = [target for target in targets if target.name not in skip_outputs]
-        if not targets:
-            if require_screen:
-                self.failed.emit("No available display. A fullscreen video may be using the selected screen.")
-            else:
-                log.info("Not starting screensaver; no free display")
+        if tile:
+            targets = _apply_tiling(
+                targets, hide_decorations=hide_decorations, scale_content=scale_content
+            )
+        if not _have_targets(targets, require_screen, tile, self.failed.emit):
+            return
+        if any(target.scale_content for target in targets) and shutil.which("gamescope") is None:
+            self.failed.emit(
+                "Scaling a tiled screensaver needs gamescope. "
+                "Install the gamescope package, or turn off Scale content."
+            )
             return
         if self.is_playing():
             self.stop()
@@ -183,13 +193,15 @@ class Player(QObject):
                     instance_env["WINEDLLOVERRIDES"] = (
                         f"{overrides};{silent_dlls}" if overrides else silent_dlls
                     )
+                desk_w, desk_h = _desktop_size(target)
                 cmd = [
                     wine,
                     "explorer",
-                    f"/desktop={target.desktop},{target.width}x{target.height}",
+                    f"/desktop={target.desktop},{desk_w}x{desk_h}",
                     wine_path,
                     "/s",
                 ]
+                cmd = _wrap_gamescope(cmd, target, instance_env)
                 log.info("Launching %s%s", " ".join(cmd), " (audio muted)" if muted else "")
                 proc = wineutil.popen_wine(session, cmd, env=instance_env)
                 procs.append(proc)
@@ -292,12 +304,14 @@ class Player(QObject):
                 if has_macro:
                     cmd = [wine, wine_path]
                 else:
+                    desk_w, desk_h = _desktop_size(target)
                     cmd = [
                         wine,
                         "explorer",
-                        f"/desktop={target.desktop},{target.width}x{target.height}",
+                        f"/desktop={target.desktop},{desk_w}x{desk_h}",
                         wine_path,
                     ]
+                cmd = _wrap_gamescope(cmd, target, instance_env)
                 log.info("Launching prefix program %s", " ".join(cmd))
                 proc = wineutil.popen_wine(session, cmd, env=instance_env)
                 procs.append(proc)
@@ -318,7 +332,9 @@ class Player(QObject):
         self._interactive = bool(getattr(entry, "interactive", False))
         self._muted_leaders = set(muted_leaders)
         self._place_tries = 0
-        self._place_by_pid = bool(getattr(entry, "keystrokes", None))
+        self._place_by_pid = bool(getattr(entry, "keystrokes", None)) and not any(
+            target.scale_content for target in targets
+        )
         self._place_timer.start()
         self._watch_timer.start()
         self.started.emit(entry.name)
@@ -465,11 +481,27 @@ class Player(QObject):
 
     def _try_place_windows(self) -> None:
         self._place_tries += 1
+        tiled = any(target.tiled for target in self._targets)
+        stop_after = 12 if tiled else 1
         if self._place_by_pid and self._wine_session is not None and self._targets:
-            if _place_prefix_windows(self._wine_session, self._targets[0], self._playing_name):
+            placed = _place_prefix_windows(self._wine_session, self._targets[0], self._playing_name)
+            if (placed and self._place_tries >= stop_after) or self._place_tries >= WINDOW_PLACE_ATTEMPTS:
                 self._place_timer.stop()
-                return
-            if self._place_tries >= WINDOW_PLACE_ATTEMPTS:
+            return
+        if tiled:
+            missing = False
+            for index, target in enumerate(self._targets):
+                if target.scale_content:
+                    proc = None
+                    if index < len(self._procs):
+                        proc = self._procs[index]
+                    elif self._procs:
+                        proc = self._procs[0]
+                    if not _place_scaled_window(target, proc):
+                        missing = True
+                elif not _place_window(target):
+                    missing = True
+            if (not missing and self._place_tries >= stop_after) or self._place_tries >= WINDOW_PLACE_ATTEMPTS:
                 self._place_timer.stop()
             return
         remaining = [target for target in self._targets if not _place_window(target)]
@@ -562,7 +594,9 @@ def _terminate_group(proc: subprocess.Popen[bytes]) -> None:
 
 
 def _close_saver_windows() -> None:
-    output = _run_capture(["wmctrl", "-l"])
+    output = _run_capture(["wmctrl", "-lx"])
+    if not output:
+        output = _run_capture(["wmctrl", "-l"])
     if not output:
         return
     marker = wineutil.WINE_DESKTOP_PREFIX.lower()
@@ -570,7 +604,8 @@ def _close_saver_windows() -> None:
         parts = line.split(None, 3)
         if len(parts) < 4:
             continue
-        if marker not in parts[3].lower():
+        blob = line.lower()
+        if marker not in blob and GAMESCOPE_WMCLASS not in blob:
             continue
         _run_quiet(["wmctrl", "-i", "-c", parts[0]])
 
@@ -630,11 +665,7 @@ def _place_prefix_windows(session, target: ScreenTarget, title: str) -> bool:
     placed = False
     for wid, win_title in chosen:
         log.info("Placing %s on %s at %d,%d", win_title or wid, target.name, target.x, target.y)
-        _run_quiet(["wmctrl", "-i", "-r", wid, "-e", f"0,{target.x},{target.y},{target.width},{target.height}"])
-        _run_quiet(["wmctrl", "-i", "-r", wid, "-b", "add,above"])
-        _run_quiet(["wmctrl", "-i", "-r", wid, "-b", "add,fullscreen"])
-        _run_quiet(["xdotool", "windowmove", wid, str(target.x), str(target.y)])
-        _run_quiet(["xdotool", "windowsize", wid, str(target.width), str(target.height)])
+        _apply_window_geometry(wid, target)
         _run_quiet(["wmctrl", "-i", "-a", wid])
         placed = True
     return placed
@@ -644,14 +675,230 @@ def _place_window(target: ScreenTarget) -> bool:
     wid = _find_window_id(target.desktop)
     if not wid:
         return False
-    log.info("Placing Wine desktop %s on %s at %d,%d", target.desktop, target.name, target.x, target.y)
+    kind = "tiled" if target.tiled else "fullscreen"
+    log.info(
+        "Placing Wine desktop %s on %s at %d,%d (%dx%d, %s)",
+        target.desktop,
+        target.name,
+        target.x,
+        target.y,
+        target.width,
+        target.height,
+        kind,
+    )
+    _apply_window_geometry(wid, target)
+    return True
+
+
+def _apply_window_geometry(wid: str, target: ScreenTarget) -> None:
+    if target.tiled:
+        _run_quiet(["wmctrl", "-i", "-r", wid, "-b", "remove,fullscreen"])
+        _run_quiet(["wmctrl", "-i", "-r", wid, "-b", "remove,maximized_vert,maximized_horz"])
+        if target.undecorated:
+            from .tile import strip_window_decorations
+
+            strip_window_decorations(wid)
+        _run_quiet(["wmctrl", "-i", "-r", wid, "-e", f"0,{target.x},{target.y},{target.width},{target.height}"])
+        _run_quiet(["wmctrl", "-i", "-r", wid, "-b", "add,above"])
+        _run_quiet(["xdotool", "windowmove", wid, str(target.x), str(target.y)])
+        _run_quiet(["xdotool", "windowsize", wid, str(target.width), str(target.height)])
+        _run_quiet(["wmctrl", "-i", "-r", wid, "-e", f"0,{target.x},{target.y},{target.width},{target.height}"])
+        return
     _run_quiet(["wmctrl", "-i", "-r", wid, "-e", f"0,{target.x},{target.y},{target.width},{target.height}"])
     _run_quiet(["wmctrl", "-i", "-r", wid, "-b", "add,above"])
     _run_quiet(["wmctrl", "-i", "-r", wid, "-b", "add,fullscreen"])
-    # If fullscreen snapped to the wrong output, move again then re-assert.
     _run_quiet(["xdotool", "windowmove", wid, str(target.x), str(target.y)])
     _run_quiet(["xdotool", "windowsize", wid, str(target.width), str(target.height)])
+
+
+def _apply_tiling(
+    targets: list[ScreenTarget],
+    hide_decorations: bool = False,
+    scale_content: bool = False,
+) -> list[ScreenTarget]:
+    from .tile import Rect, tile_rect_for_screen
+
+    tiled: list[ScreenTarget] = []
+    for target in targets:
+        bounds = Rect(target.x, target.y, target.width, target.height)
+        gap = tile_rect_for_screen(target.name, bounds)
+        if gap is None:
+            log.info("No empty space on %s for a tiled screensaver", target.name)
+            continue
+        extra = []
+        if hide_decorations:
+            extra.append("undecorated")
+        if scale_content:
+            extra.append("scaled")
+        log.info(
+            "Tiling screensaver on %s at %d,%d (%dx%d)%s",
+            target.name,
+            gap.x,
+            gap.y,
+            gap.w,
+            gap.h,
+            f" ({', '.join(extra)})" if extra else "",
+        )
+        tiled.append(
+            ScreenTarget(
+                name=target.name,
+                x=gap.x,
+                y=gap.y,
+                width=max(320, gap.w),
+                height=max(240, gap.h),
+                desktop=target.desktop,
+                tiled=True,
+                undecorated=bool(hide_decorations),
+                scale_content=bool(scale_content),
+                content_width=max(320, target.width),
+                content_height=max(240, target.height),
+            )
+        )
+    return tiled
+
+
+def _have_targets(targets: list[ScreenTarget], require_screen: bool, tile: bool, fail) -> bool:
+    if targets:
+        return True
+    if require_screen:
+        if tile:
+            fail("No empty space for a tiled screensaver on the selected display.")
+        else:
+            fail("No available display. A fullscreen video may be using the selected screen.")
+    else:
+        log.info("Not starting screensaver; no free display")
+    return False
+
+
+def _desktop_size(target: ScreenTarget) -> tuple[int, int]:
+    if target.scale_content and target.content_width > 0 and target.content_height > 0:
+        return target.content_width, target.content_height
+    return target.width, target.height
+
+
+def _wrap_gamescope(cmd: list[str], target: ScreenTarget, env: dict[str, str]) -> list[str]:
+    if not target.scale_content:
+        return cmd
+    gs = shutil.which("gamescope")
+    if gs is None:
+        return cmd
+    inner_w, inner_h = _desktop_size(target)
+    env["SDL_VIDEODRIVER"] = "x11"
+    env["SDL_VIDEO_X11_WMCLASS"] = GAMESCOPE_WMCLASS
+    env["ENABLE_GAMESCOPE_WSI"] = "0"
+    env["WINE_DISABLE_FULLSCREEN_HACK"] = "1"
+    return [
+        gs,
+        "--backend",
+        "sdl",
+        "-b",
+        "-w",
+        str(inner_w),
+        "-h",
+        str(inner_h),
+        "-W",
+        str(max(320, target.width)),
+        "-H",
+        str(max(240, target.height)),
+        "-S",
+        "fit",
+        "-F",
+        "linear",
+        "--force-windows-fullscreen",
+        "--",
+        *cmd,
+    ]
+
+
+def _place_scaled_window(target: ScreenTarget, proc: subprocess.Popen[bytes] | None) -> bool:
+    wid = ""
+    if proc is not None and proc.pid:
+        wid = _find_window_for_pids(_descendant_pids(proc.pid))
+    if not wid:
+        wid = _find_window_id(target.desktop)
+    if not wid:
+        wid = _find_window_by_class(GAMESCOPE_WMCLASS)
+    if not wid:
+        return False
+    log.info(
+        "Placing scaled saver on %s at %d,%d (%dx%d from %dx%d)",
+        target.name,
+        target.x,
+        target.y,
+        target.width,
+        target.height,
+        target.content_width or target.width,
+        target.content_height or target.height,
+    )
+    _apply_window_geometry(wid, target)
     return True
+
+
+def _find_window_by_class(klass: str) -> str:
+    output = _run_capture(["wmctrl", "-lx"])
+    if not output:
+        return ""
+    needle = klass.lower()
+    for line in output.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) < 3:
+            continue
+        if needle in parts[2].lower():
+            return parts[0]
+    return ""
+
+
+def _find_window_for_pids(pids: set[int]) -> str:
+    if not pids:
+        return ""
+    output = _run_capture(["wmctrl", "-lp"])
+    if not output:
+        return ""
+    for line in output.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) < 4:
+            continue
+        try:
+            pid = int(parts[2])
+        except ValueError:
+            continue
+        if pid in pids:
+            return parts[0]
+    return ""
+
+
+def _descendant_pids(root: int) -> set[int]:
+    found = {root}
+    children: dict[int, list[int]] = {}
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            ppid = _ppid_of(pid)
+            if ppid is None:
+                continue
+            children.setdefault(ppid, []).append(pid)
+    except OSError:
+        return found
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        for child in children.get(current, []):
+            if child not in found:
+                found.add(child)
+                stack.append(child)
+    return found
+
+
+def _ppid_of(pid: int) -> int | None:
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("PPid:"):
+                return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
 
 
 def _find_window_id(title: str) -> str:

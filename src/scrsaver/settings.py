@@ -105,6 +105,36 @@ class AdditionalSettingsDialog(QDialog):
         self.skip_fs = QCheckBox("Do not run a screensaver on a display that has fullscreen video")
         self.skip_fs.toggled.connect(self._save)
         video_form.addRow(self.skip_fs)
+        self.tile_box = QCheckBox("Tile the screensaver into empty space instead of filling the screen")
+        self.tile_box.toggled.connect(self._on_tile_toggled)
+        video_form.addRow(self.tile_box)
+        self.tile_deco_box = QCheckBox(
+            "Disable KDE window decorations for the tiled screensaver or demo"
+        )
+        self.tile_deco_box.toggled.connect(self._save)
+        deco_wrap = QWidget()
+        deco_row = QHBoxLayout(deco_wrap)
+        deco_row.setContentsMargins(24, 0, 0, 0)
+        deco_row.addWidget(self.tile_deco_box)
+        video_form.addRow(deco_wrap)
+        self.tile_scale_box = QCheckBox(
+            "Scale the content so all of it fits in the tiled window"
+        )
+        self.tile_scale_box.toggled.connect(self._save)
+        scale_wrap = QWidget()
+        scale_row = QHBoxLayout(scale_wrap)
+        scale_row.setContentsMargins(24, 0, 0, 0)
+        scale_row.addWidget(self.tile_scale_box)
+        video_form.addRow(scale_wrap)
+        tile_hint = QLabel(
+            "The saver sits in the largest gap between windows on the chosen display "
+            "and grows to fill that gap. Panels stay visible. If a screen has no room, "
+            "that screen is skipped. Decorations are the title bar and borders KWin "
+            "draws around the window. Scaling draws the saver at the display’s normal "
+            "size and shrinks that picture into the gap so nothing is cropped."
+        )
+        tile_hint.setWordWrap(True)
+        video_form.addRow(tile_hint)
         layout.addWidget(video)
 
         keys = QGroupBox("Interactive demos")
@@ -251,6 +281,9 @@ class AdditionalSettingsDialog(QDialog):
         self.mute_box.blockSignals(True)
         self.duck_slider.blockSignals(True)
         self.skip_fs.blockSignals(True)
+        self.tile_box.blockSignals(True)
+        self.tile_deco_box.blockSignals(True)
+        self.tile_scale_box.blockSignals(True)
         self.one_audio_box.blockSignals(True)
         self.audio_source_combo.blockSignals(True)
         self.fps_combo.blockSignals(True)
@@ -259,17 +292,24 @@ class AdditionalSettingsDialog(QDialog):
         self.one_audio_box.setChecked(self.cfg.one_audio_source)
         self._fill_audio_sources()
         self.skip_fs.setChecked(self.cfg.skip_fullscreen_video)
+        self.tile_box.setChecked(self.cfg.tile_into_free_space)
+        self.tile_deco_box.setChecked(self.cfg.tile_hide_decorations)
+        self.tile_scale_box.setChecked(self.cfg.tile_scale_content)
         self.key_edit.setKeySequence(QKeySequence(self.cfg.interactive_exit_key or "Escape"))
         fps_idx = self.fps_combo.findData(int(self.cfg.fps_limit or 0))
         self.fps_combo.setCurrentIndex(max(0, fps_idx))
         self.mute_box.blockSignals(False)
         self.duck_slider.blockSignals(False)
         self.skip_fs.blockSignals(False)
+        self.tile_box.blockSignals(False)
+        self.tile_deco_box.blockSignals(False)
+        self.tile_scale_box.blockSignals(False)
         self.one_audio_box.blockSignals(False)
         self.audio_source_combo.blockSignals(False)
         self.fps_combo.blockSignals(False)
         self._on_duck_changed(self.duck_slider.value())
         self._refresh_one_audio_widgets()
+        self._refresh_tile_widgets()
         self._loading = False
 
     def _on_duck_changed(self, value: int) -> None:
@@ -292,10 +332,23 @@ class AdditionalSettingsDialog(QDialog):
         self.cfg.one_audio_source = self.one_audio_box.isChecked()
         self.cfg.audio_source_display = str(self.audio_source_combo.currentData() or "primary")
         self.cfg.skip_fullscreen_video = self.skip_fs.isChecked()
+        self.cfg.tile_into_free_space = self.tile_box.isChecked()
+        self.cfg.tile_hide_decorations = self.tile_deco_box.isChecked()
+        self.cfg.tile_scale_content = self.tile_scale_box.isChecked()
         self.cfg.fps_limit = int(self.fps_combo.currentData() or 0)
         self.cfg.interactive_exit_key = sequence_to_name(self.key_edit.keySequence())
         save_config(self.cfg)
         self._apply_config()
+
+    def _on_tile_toggled(self, _checked: bool = False) -> None:
+        self._refresh_tile_widgets()
+        if not self._loading:
+            self._save()
+
+    def _refresh_tile_widgets(self) -> None:
+        on = self.tile_box.isChecked()
+        self.tile_deco_box.setEnabled(on)
+        self.tile_scale_box.setEnabled(on)
 
     def _open_prefix_wizard(self) -> None:
         wizard = PrefixSetupWizard(self.cfg, self)

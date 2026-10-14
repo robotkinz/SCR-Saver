@@ -131,6 +131,12 @@ def log_dir() -> Path:
     return path
 
 
+def crash_dir() -> Path:
+    path = log_dir() / "crashes"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def autostart_dir() -> Path:
     path = xdg_config_home() / "autostart"
     path.mkdir(parents=True, exist_ok=True)

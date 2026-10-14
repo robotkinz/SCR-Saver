@@ -984,6 +984,12 @@ class MainWindow(QMainWindow):
 
     def quit_app(self) -> None:
         self._really_quit = True
+        try:
+            from .crash import mark_clean_exit
+
+            mark_clean_exit()
+        except Exception:
+            pass
         self.controller.shutdown()
         self.tray.hide()
         self.close()

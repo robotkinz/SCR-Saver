@@ -2,7 +2,7 @@
 
 **Alpha** — Linux tray app that plays Windows `.scr` screensavers with Wine when the computer is idle. It leaves the session unlocked.
 
-This is the first public alpha. Expect rough edges, especially around autoplay, Proton games, and odd `.scr` files.
+This is a public alpha. Expect rough edges, especially around autoplay, Proton games, and odd `.scr` files.
 
 ## Features
 
@@ -14,6 +14,8 @@ This is the first public alpha. Expect rough edges, especially around autoplay, 
 - Import a Windows program by EXE (Heroic layouts included) or an installed Steam game
 - Record keys, mouse movement, and clicks, then replay them when a demo starts
 - Audio duck or mute, optional mute while the frame cap is on, skip a screen that is showing fullscreen video
+- Tile the screensaver into empty space between windows, with optional hidden decorations and scaled content
+- Crash reports after a failure, with a prompt on the next start
 - systemd user service so it can start with the graphical session
 
 SCR Saver uses its own Wine prefixes under `~/.local/share/scrsaver/`. It does not use `~/.wine`.
@@ -26,6 +28,7 @@ SCR Saver uses its own Wine prefixes under `~/.local/share/scrsaver/`. It does n
 - `wmctrl` and `xdotool`
 - Membership in the `input` group (idle detection and autoplay recording)
 - Optional: `7z` for zip/exe import, distro `unshield` if you skip the bundled x86_64 helper
+- Optional: `gamescope` for **Scale the content so all of it fits in the tiled window**
 
 Arch / Garuda:
 
@@ -66,6 +69,10 @@ Data lives under:
 - config: `~/.config/scrsaver/config.json`
 - imported files: `~/.local/share/scrsaver/library/`
 - private Wine prefix: `~/.local/share/scrsaver/wineprefix/`
+- logs: `~/.local/share/scrsaver/logs/scrsaver.log`
+- crash reports: `~/.local/share/scrsaver/logs/crashes/`
+
+If SCR Saver crashes, it writes a timestamped report in that crashes folder. After the next start you get a prompt with the file path and an **Open folder** button.
 
 Rebuild the frame-pacing helper if you change `native/scrsaver_pace.c`:
 
@@ -106,7 +113,9 @@ Unpack onto a Linux filesystem. A new Wine prefix is created there.
 
 Right-click a list item for Wine/Proton, winecfg, Winetricks, Wine uninstaller, interactive demo, and **Record autoplay input…**.
 
-Right-click the tray icon for **Additional Settings**: audio, fullscreen-video skip, interactive exit key, Wine Prefix Wizard, **Manage prefixes**, and a Windows installer into a chosen bottle.
+Right-click the tray icon for **Additional Settings**: audio, fullscreen-video skip, window tiling, interactive exit key, Wine Prefix Wizard, **Manage prefixes**, and a Windows installer into a chosen bottle.
+
+**Tile the screensaver into empty space** sits under the fullscreen-video skip option. The saver fills the largest gap between windows on the chosen display and leaves KDE panels alone. Nested checkboxes can hide the title bar and borders, and scale the full-size picture into the gap so nothing is cropped. Scaling needs `gamescope`. A screen is skipped if the remaining gap is smaller than 400×300.
 
 **Manage prefixes** can import a Windows EXE (Heroic games under `~/Games/Heroic` bring their Wine/Proton bottle) or an installed Steam game. After import you can record keys and mouse input; Escape finishes recording and is not replayed. A later dialog can loop the take and choose whether a real key, mouse move, or click stops playback.
 
@@ -129,7 +138,7 @@ A `.scr` file is a Windows PE executable. Playback copies it into a private Wine
 wine explorer /desktop=SCRSAVER-0,1920x1080 C:\scrsaver\FILE.SCR /s
 ```
 
-Each screen gets its own Wine virtual desktop, then the window is placed with `wmctrl` and made fullscreen.
+Each screen gets its own Wine virtual desktop, then the window is placed with `wmctrl` and made fullscreen. With tiling on, the virtual desktop is sized to the gap and placed there instead.
 
 Old Win32 / GDI savers are the expected case. Direct3D or .NET savers may need extra Wine components (`winetricks d3dx9`, Mono, and so on). Configure dialogs use `wine FILE.scr /c` when the saver implements `/c`.
 
@@ -143,9 +152,16 @@ Installer `.exe` files (InstallShield, zip SFX, and similar) are unpacked and ev
 - Some savers ignore `/s` or expect a real Windows display driver.
 - Idle detection and autoplay recording need the `input` group.
 - Autoplay mouse playback is still experimental, especially inside Wine virtual desktops and FPS titles.
+- Content scaling in a tiled window needs `gamescope`.
 - If XScreenSaver is also running, both can fire. Turn it off or give SCR Saver a shorter timeout.
 
 While a saver is on screen, SCR Saver inhibits idle sleep/blanking so the picture is not immediately blanked.
+
+## Publishing
+
+Live development is `~/Projects/scrsaver`. The GitHub copy is `~/SCR Saver Project`, opened in GitHub Desktop. See [PUBLISH.md](PUBLISH.md).
+
+When you are ready to post an update: add bullets to `CHANGELOG.md`, run `./sync-github-folder.sh`, copy `SOCIAL.md` into your post, then commit and push from GitHub Desktop.
 
 ## License
 
