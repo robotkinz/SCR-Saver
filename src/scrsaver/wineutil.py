@@ -692,6 +692,125 @@ def open_winetricks(session: WineSession) -> None:
     popen_wine(session, [tricks, "--gui"])
 
 
+def read_winetricks_log(prefix: Path) -> list[str]:
+    """Installed Winetricks verbs from a prefix, in order, unique."""
+    path = Path(prefix) / "winetricks.log"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    verbs: list[str] = []
+    seen: set[str] = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        verb = line.split()[0]
+        if not _safe_winetricks_verb(verb) or verb.lower() in seen:
+            continue
+        seen.add(verb.lower())
+        verbs.append(verb)
+    return verbs
+
+
+def _safe_winetricks_verb(verb: str) -> bool:
+    if not verb or len(verb) > 80:
+        return False
+    first = verb[0]
+    if not first.isalnum():
+        return False
+    return all(ch.isalnum() or ch in "._+-" for ch in verb)
+
+
+def run_winetricks(
+    session: WineSession,
+    verbs: list[str],
+    line_cb=None,
+    timeout: int = 3600,
+) -> None:
+    """Download and install Winetricks verbs into this prefix. Blocks until done."""
+    tricks = shutil.which("winetricks")
+    if not tricks:
+        raise FileNotFoundError("Winetricks is not installed or not on PATH.")
+    clean = [verb for verb in verbs if _safe_winetricks_verb(verb)]
+    if not clean:
+        return
+    setup_prefix(session)
+    env = wine_env(session)
+    env["WINETRICKS_LATEST"] = env.get("WINETRICKS_LATEST", "1")
+    cmd = [tricks, "-q", *clean]
+    log.info("Winetricks: %s into %s", " ".join(clean), session.prefix)
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            text = line.rstrip()
+            if text:
+                log.info("winetricks: %s", text)
+                if line_cb is not None:
+                    line_cb(text)
+        code = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        raise RuntimeError(f"Winetricks timed out after {timeout} seconds.")
+    if code != 0:
+        raise RuntimeError(f"Winetricks exited with code {code}.")
+
+
+def set_prefix_windows_version(session: WineSession, version: str) -> None:
+    version = (version or "").strip()
+    if not version or not _safe_winetricks_verb(version):
+        return
+    setup_prefix(session)
+    subprocess.run(
+        [session.wine, "winecfg", "-v", version],
+        env=wine_env(session),
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=60,
+    )
+
+
+def set_dll_overrides(session: WineSession, overrides: dict[str, str]) -> None:
+    if not overrides:
+        return
+    setup_prefix(session)
+    env = wine_env(session)
+    for name, mode in overrides.items():
+        dll = str(name or "").strip()
+        setting = str(mode or "").strip()
+        if not dll or not all(ch.isalnum() or ch in "._-" for ch in dll):
+            continue
+        if not setting or not all(ch.isalnum() or ch in ",._-" for ch in setting):
+            continue
+        subprocess.run(
+            [
+                session.wine,
+                "reg",
+                "add",
+                r"HKCU\Software\Wine\DllOverrides",
+                "/v",
+                dll,
+                "/d",
+                setting,
+                "/f",
+            ],
+            env=env,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+
+
 def list_prefix_pids(session: WineSession | None = None) -> list[int]:
     """PIDs whose environment points at this Wine prefix."""
     prefix = (session or session_for(None)).prefix.resolve()

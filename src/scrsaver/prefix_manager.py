@@ -79,6 +79,23 @@ class PrefixManagerDialog(QDialog):
         import_row.addWidget(self.import_btn)
         import_row.addWidget(self.steam_btn)
         left.addLayout(import_row)
+        left.addWidget(QLabel("Compatibility scripts"))
+        script_row = QHBoxLayout()
+        self.script_import_btn = QPushButton("Import script…")
+        self.script_import_btn.setToolTip(
+            "Load a shared recipe: Winetricks packages, screensaver settings, "
+            "and game autoplay recordings. You choose which prefix they go into."
+        )
+        self.script_import_btn.clicked.connect(self._import_script)
+        self.script_export_btn = QPushButton("Export script…")
+        self.script_export_btn.setToolTip(
+            "Write a shareable JSON recipe for the highlighted prefix: its "
+            "Winetricks packages and the right-click settings of savers that use it."
+        )
+        self.script_export_btn.clicked.connect(self._export_script)
+        script_row.addWidget(self.script_import_btn)
+        script_row.addWidget(self.script_export_btn)
+        left.addLayout(script_row)
         root.addLayout(left, 2)
 
         right = QVBoxLayout()
@@ -162,13 +179,6 @@ class PrefixManagerDialog(QDialog):
         hint.setWordWrap(True)
         hint.setStyleSheet("color: palette(mid);")
         right.addWidget(hint)
-
-        note = QLabel(
-            "Install-script import and export for each prefix is planned for October."
-        )
-        note.setWordWrap(True)
-        note.setStyleSheet("color: palette(mid);")
-        right.addWidget(note)
         right.addStretch(1)
 
         close = QPushButton("Close")
@@ -493,6 +503,23 @@ class PrefixManagerDialog(QDialog):
             f'"{entry.name}" is in the screensaver list and will launch through Steam '
             f"as an interactive demo.{extra}",
         )
+
+    def _import_script(self) -> None:
+        from .profile_dialog import pick_and_import
+
+        pick_and_import(
+            self.cfg,
+            self,
+            default_prefix=self._current_name(),
+            default_runner=self._current_runner(),
+            library_changed=self._notify_library,
+        )
+        self._reload_list(select=self._current_name() or None)
+
+    def _export_script(self) -> None:
+        from .profile_dialog import export_current_prefix
+
+        export_current_prefix(self.cfg, self, self._current_name())
 
     def _notify_library(self) -> None:
         if self._library_changed is not None:

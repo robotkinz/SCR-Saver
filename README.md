@@ -28,6 +28,7 @@ SCR Saver uses its own Wine prefixes under `~/.local/share/scrsaver/`. It does n
 - `wmctrl` and `xdotool`
 - Membership in the `input` group (idle detection and autoplay recording)
 - Optional: `7z` for zip/exe import, distro `unshield` if you skip the bundled x86_64 helper
+- Optional: `winetricks` for compatibility scripts and extra Wine components
 - Optional: `gamescope` for **Scale the content so all of it fits in the tiled window**
 
 Arch / Garuda:
@@ -118,6 +119,8 @@ Right-click the tray icon for **Additional Settings**: audio, fullscreen-video s
 **Tile the screensaver into empty space** sits under the fullscreen-video skip option. The saver fills the largest gap between windows on the chosen display and leaves KDE panels alone. Nested checkboxes can hide the title bar and borders, and scale the full-size picture into the gap so nothing is cropped. Scaling needs `gamescope`. A screen is skipped if the remaining gap is smaller than 400×300.
 
 **Manage prefixes** can import a Windows EXE (Heroic games under `~/Games/Heroic` bring their Wine/Proton bottle) or an installed Steam game. After import you can record keys and mouse input; Escape finishes recording and is not replayed. A later dialog can loop the take and choose whether a real key, mouse move, or click stops playback.
+
+**Import script…** / **Export script…** share a JSON compatibility recipe for the highlighted prefix. Export lists Winetricks packages already in that bottle and the right-click settings of every screensaver that uses it (Wine/Proton, Windows version, interactive, notes, extras). Steam and prefix EXE games contribute only their autoplay keystrokes. Import asks which prefix to apply to (the highlighted bottle is the default, usually `~/.local/share/scrsaver/wineprefix/`), shows the full package list, downloads those Winetricks verbs into it, and copies settings onto matching library items. The Wine Prefix Wizard offers the same import after a new bottle is created. Scripts do not include `.scr` files or game EXEs — import those separately.
 
 The default Wine prefix cannot be removed. Bottles created under `~/.local/share/scrsaver/` can be deleted; imported and Steam bottles are delisted only.
 

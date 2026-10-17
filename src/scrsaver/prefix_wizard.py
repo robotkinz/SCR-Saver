@@ -140,7 +140,10 @@ class ToolsPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
         self.setTitle("Prefix ready")
-        self.setSubTitle("Open Wine configuration or Winetricks if this bottle needs extra components.")
+        self.setSubTitle(
+            "Open Wine tools, or import a compatibility script to download the "
+            "listed packages into this bottle."
+        )
         layout = QVBoxLayout(self)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
@@ -153,10 +156,13 @@ class ToolsPage(QWizardPage):
         if not shutil.which("winetricks"):
             self.tricks_btn.setEnabled(False)
             self.tricks_btn.setText("Winetricks… (not installed)")
+        self.script_btn = QPushButton("Import compatibility script…")
+        self.script_btn.clicked.connect(self._import_script)
         buttons.addWidget(self.winecfg_btn)
         buttons.addWidget(self.tricks_btn)
         buttons.addStretch(1)
         layout.addLayout(buttons)
+        layout.addWidget(self.script_btn)
         layout.addStretch(1)
 
     def initializePage(self) -> None:
@@ -168,8 +174,9 @@ class ToolsPage(QWizardPage):
         dest = paths.resolve_named_prefix(name)
         self.summary.setText(
             f"Created {dest}\nusing {runner_label}.\n\n"
-            "You can install Windows programs into this prefix later. "
-            "Removing prefixes will come in a later update."
+            "Import a compatibility script to install the listed Winetricks "
+            "packages and apply screensaver or autoplay settings. You can also "
+            "open Wine configuration or Winetricks by hand."
         )
 
     def _session(self):
@@ -190,6 +197,17 @@ class ToolsPage(QWizardPage):
         except Exception as exc:
             QMessageBox.warning(self, "Winetricks", str(exc))
 
+    def _import_script(self) -> None:
+        from .profile_dialog import pick_and_import
+
+        wizard = self.wizard()
+        if not isinstance(wizard, PrefixSetupWizard):
+            return
+        name = paths.sanitize_prefix_name(wizard.field("prefix_name"))
+        runner_id = wizard.name_page.runner_id()
+        if pick_and_import(wizard.cfg, self, default_prefix=name, default_runner=runner_id):
+            wizard.imported_script = True
+
 
 class PrefixSetupWizard(QWizard):
     def __init__(self, cfg: AppConfig, parent=None) -> None:
@@ -197,6 +215,7 @@ class PrefixSetupWizard(QWizard):
         self.cfg = cfg
         self.created_name = ""
         self.created_runner_id = ""
+        self.imported_script = False
         self.setWindowTitle("Wine Prefix Wizard")
         self.setMinimumWidth(520)
         self.name_page = NamePage(cfg)

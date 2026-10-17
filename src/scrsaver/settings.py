@@ -273,6 +273,10 @@ class AdditionalSettingsDialog(QDialog):
         if wizard.exec() != QDialog.DialogCode.Accepted or not wizard.created_name:
             self._fill_prefix_combo()
             return None
+        if not wizard.imported_script:
+            from .profile_dialog import offer_import_after_wizard
+
+            offer_import_after_wizard(self.cfg, self, wizard.created_name, wizard.created_runner_id)
         self._fill_prefix_combo(select_name=wizard.created_name)
         return wizard.created_name
 
@@ -353,6 +357,10 @@ class AdditionalSettingsDialog(QDialog):
     def _open_prefix_wizard(self) -> None:
         wizard = PrefixSetupWizard(self.cfg, self)
         wizard.exec()
+        if wizard.created_name and not wizard.imported_script:
+            from .profile_dialog import offer_import_after_wizard
+
+            offer_import_after_wizard(self.cfg, self, wizard.created_name, wizard.created_runner_id)
         self._fill_prefix_combo(select_name=wizard.created_name or None)
 
     def _open_prefix_manager(self) -> None:
