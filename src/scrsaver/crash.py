@@ -22,6 +22,7 @@ _FAULT_NAME = "faulthandler.log"
 _SEEN_NAME = "seen.txt"
 _fault_file = None
 _qt_handler_ref = None
+_shutdown_watch_ref = None
 _installed = False
 _clean_exit = False
 
@@ -40,16 +41,20 @@ def harvest_previous_crash() -> Path | None:
     session = _read_session()
     fault_text = _read_text(folder / _FAULT_NAME)
     pid = int(session.get("pid") or 0) if session else 0
-    still_us = bool(pid) and _pid_is_scrsaver(pid)
-    if still_us:
+    if pid and _pid_is_scrsaver(pid):
         return None
-    if not session and not fault_text.strip():
+    skip = _harvest_skip_reason(session, fault_text)
+    if skip:
+        if skip != "no previous session":
+            log.info("Not treating the previous session as a crash (%s)", skip)
+        _clear_session()
+        _truncate_fault_file()
         return None
-    started = str(session.get("started") or "") if session else ""
     if session and session.get("reported"):
         _clear_session()
         _truncate_fault_file()
         return None
+    started = str(session.get("started") or "") if session else ""
     chunks = [
         "Previous SCR Saver session did not exit cleanly.",
         f"Previous PID: {pid or 'unknown'}",
@@ -100,6 +105,10 @@ def install_crash_handlers() -> None:
         qInstallMessageHandler(_qt_handler_ref)
     except Exception:
         pass
+    try:
+        _install_session_end_watchers()
+    except Exception as exc:
+        log.warning("Could not watch for system shutdown: %s", exc)
     log.info("Crash reports go in %s", folder)
 
 
@@ -107,6 +116,10 @@ def mark_clean_exit() -> None:
     global _clean_exit
     _clean_exit = True
     _clear_session()
+    try:
+        faulthandler.disable()
+    except Exception:
+        pass
 
 
 def write_crash_report(kind: str, body: str, *, exc: BaseException | None = None) -> Path | None:
@@ -335,6 +348,7 @@ def _write_session() -> None:
         "pid": os.getpid(),
         "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "version": __version__,
+        "boot_id": _current_boot_id(),
         "reported": False,
     }
     try:
@@ -372,6 +386,114 @@ def _read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _harvest_skip_reason(session: dict, fault_text: str) -> str:
+    """Why leftover crash state should not be shown as a crash, or empty to keep it."""
+    fault = (fault_text or "").strip()
+    if not session and not fault:
+        return "no previous session"
+    if not session:
+        # mark_clean_exit already ran (logout/reboot SIGTERM), then the tray
+        # often SIGSEGVs as the session bus dies. That leftover dump is not a crash.
+        return "clean stop leftover"
+    if _session_from_previous_boot(session):
+        return "machine rebooted"
+    if _is_teardown_dump(fault):
+        return "session teardown"
+    return ""
+
+
+def _is_teardown_dump(text: str) -> bool:
+    lowered = (text or "").lower()
+    if not lowered:
+        return False
+    markers = (
+        "libkf6statusnotifieritem",
+        "statusnotifieritem",
+        "qdbusservicewatcher",
+        "sni unavailable",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _session_from_previous_boot(session: dict) -> bool:
+    prev_boot = str(session.get("boot_id") or "")
+    current = _current_boot_id()
+    if prev_boot and current and prev_boot != current:
+        return True
+    started = str(session.get("started") or "")
+    if not started:
+        return False
+    try:
+        started_ts = datetime.fromisoformat(started).timestamp()
+    except ValueError:
+        return False
+    btime = _system_boot_time()
+    return bool(btime) and started_ts < (btime - 2)
+
+
+def _current_boot_id() -> str:
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _system_boot_time() -> float:
+    try:
+        for line in Path("/proc/stat").read_text(encoding="utf-8").splitlines():
+            if line.startswith("btime "):
+                return float(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0.0
+    return 0.0
+
+
+def _install_session_end_watchers() -> None:
+    global _shutdown_watch_ref
+    try:
+        from PyQt6.QtCore import QObject, pyqtSlot
+        from PyQt6.QtDBus import QDBusConnection
+        from PyQt6.QtWidgets import QApplication
+    except Exception:
+        return
+
+    class _ShutdownWatch(QObject):
+        @pyqtSlot(bool)
+        def on_prepare_for_shutdown(self, active: bool) -> None:
+            if not active:
+                if _installed and not _clean_exit:
+                    try:
+                        if _fault_file is not None:
+                            faulthandler.enable(_fault_file, all_threads=True)
+                    except Exception:
+                        pass
+                    _write_session()
+                return
+            log.info("System is shutting down; treating this as a clean stop")
+            mark_clean_exit()
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+
+    watch = _ShutdownWatch()
+    bus = QDBusConnection.systemBus()
+    if not bus.isConnected():
+        return
+    connected = bus.connect(
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+        "PrepareForShutdown",
+        "b",
+        watch.on_prepare_for_shutdown,
+    )
+    if not connected:
+        log.debug("Could not subscribe to PrepareForShutdown")
+        return
+    _shutdown_watch_ref = watch
+    log.info("Watching for system shutdown so a reboot is not treated as a crash")
 
 
 def _pid_is_scrsaver(pid: int) -> bool:

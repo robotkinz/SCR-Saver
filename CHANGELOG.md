@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2-alpha — 2026-10-16
+
+- Restarting or logging out is no longer treated as a crash
+
 ## 0.1.1-alpha — 2026-10-14
 
 - Tile the screensaver into empty space instead of filling the whole screen

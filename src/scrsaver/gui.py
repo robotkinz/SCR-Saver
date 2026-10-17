@@ -990,8 +990,12 @@ class MainWindow(QMainWindow):
             mark_clean_exit()
         except Exception:
             pass
+        try:
+            self.tray.setContextMenu(None)
+            self.tray.hide()
+        except Exception:
+            pass
         self.controller.shutdown()
-        self.tray.hide()
         self.close()
         from PyQt6.QtWidgets import QApplication
 

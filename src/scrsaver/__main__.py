@@ -52,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     window = MainWindow(controller, show_window=not args.background)
     server.newConnection.connect(lambda: _on_second_instance(server, window))
     QTimer.singleShot(800, lambda: prompt_pending_crashes(window))
+    app.aboutToQuit.connect(mark_clean_exit)
 
     def _handle_signal(_signum, _frame) -> None:
         mark_clean_exit()
@@ -59,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, _handle_signal)
 
     if args.play:
         target = args.play
