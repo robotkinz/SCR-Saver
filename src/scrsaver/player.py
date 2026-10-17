@@ -194,13 +194,17 @@ class Player(QObject):
                         f"{overrides};{silent_dlls}" if overrides else silent_dlls
                     )
                 desk_w, desk_h = _desktop_size(target)
+                play_path = wineutil.screentime_play_path(entry, session) or wine_path
                 cmd = [
                     wine,
                     "explorer",
                     f"/desktop={target.desktop},{desk_w}x{desk_h}",
-                    wine_path,
-                    "/s",
+                    play_path,
                 ]
+                # ScreenTime for Flash: the .scr is only a launcher. The movie is
+                # the companion projector EXE, which is not a /s screensaver.
+                if play_path == wine_path:
+                    cmd.append("/s")
                 cmd = _wrap_gamescope(cmd, target, instance_env)
                 log.info("Launching %s%s", " ".join(cmd), " (audio muted)" if muted else "")
                 proc = wineutil.popen_wine(session, cmd, env=instance_env)

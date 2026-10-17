@@ -29,6 +29,7 @@ class SaverController(QObject):
         self.idle.set_timeout(cfg.timeout_seconds)
         self.idle.idle.connect(self._on_idle)
         self.idle.active.connect(self._on_active)
+        self.idle.activity.connect(self._on_input)
         self.idle.escape.connect(self._on_escape)
         self.idle.error.connect(self.error)
         self.player.started.connect(self._on_started)
@@ -112,6 +113,11 @@ class SaverController(QObject):
         self.play_entry(manual=False)
 
     def _on_active(self) -> None:
+        self._on_input()
+        if not self.player.is_playing():
+            self.state_changed.emit()
+
+    def _on_input(self) -> None:
         if self.player.grace_active():
             return
         if self.player.is_playing() and self.player.is_interactive():
@@ -119,8 +125,6 @@ class SaverController(QObject):
         if self.player.is_playing():
             log.info("Input detected, stopping screensaver")
             self.stop_playback()
-        else:
-            self.state_changed.emit()
 
     def _on_escape(self) -> None:
         if self.player.is_playing() and self.player.is_interactive():

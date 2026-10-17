@@ -23,6 +23,7 @@ class IdleMonitor(QObject):
 
     idle = pyqtSignal()
     active = pyqtSignal()
+    activity = pyqtSignal()
     escape = pyqtSignal()
     error = pyqtSignal(str)
 
@@ -198,6 +199,7 @@ class IdleMonitor(QObject):
         if time.monotonic() < self._ignore_until:
             return
         self._last_activity = time.monotonic()
+        self.activity.emit()
         if self._idle_emitted:
             self._idle_emitted = False
             self.active.emit()

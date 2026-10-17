@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4-alpha — 2026-10-17
+
+- ScreenTime for Flash savers (FLCL and similar) now play the companion projector, not just the Gainax logo
+- Mouse and keyboard dismiss a screensaver during Test, not only after idle timeout
+
 ## 0.1.3-alpha — 2026-10-17
 
 - Share Wine compatibility scripts: export a prefix as a recipe, import it into any bottle

@@ -598,6 +598,39 @@ def _library_sidecars(entry) -> list[Path]:
     return [library / name for name in sorted(names)]
 
 
+def _is_screentime_flash(path: Path) -> bool:
+    """ScreenTime for Flash engine (.scr) that launches a companion projector EXE."""
+    try:
+        data = path.read_bytes()[: 512 * 1024]
+    except OSError:
+        return False
+    return b"S32FUJ.exe" in data or b"ScreenTime for Flash" in data
+
+
+def _stage_screentime_projector(source: Path, dest_dir: Path) -> Path | None:
+    """Copy the same-stem Flash projector as S32FUJ.exe (the name ScreenTime CreateProcess's)."""
+    if not _is_screentime_flash(source):
+        return None
+    projector = dest_dir / f"{source.stem}.exe"
+    if not projector.is_file():
+        return None
+    _copy_if_needed(projector, dest_dir / "S32FUJ.exe")
+    log.info("ScreenTime for Flash: projector %s (also S32FUJ.exe)", projector.name)
+    return projector
+
+
+def screentime_play_path(entry, session: WineSession | None = None) -> str | None:
+    """Wine path of the companion Flash projector, if this saver is ScreenTime for Flash."""
+    source = entry.linux_path()
+    if not source.is_file() or not _is_screentime_flash(source):
+        return None
+    current = session or session_for(entry)
+    dest = current.prefix / "drive_c" / "scrsaver" / f"{source.stem}.exe"
+    if not dest.is_file():
+        return None
+    return f"C:\\scrsaver\\{dest.name}"
+
+
 def stage_entry(entry, session: WineSession | None = None) -> str:
     """Copy a library screensaver and its sidecars into the Wine prefix."""
     current = session or session_for(entry)
@@ -614,6 +647,7 @@ def stage_entry(entry, session: WineSession | None = None) -> str:
         if extra.suffix.lower() == ".dll":
             _copy_if_needed(extra, system32 / extra.name)
             _copy_if_needed(extra, syswow64 / extra.name)
+    _stage_screentime_projector(source, dest_dir)
     winver = getattr(entry, "winver", "") or ""
     if winver:
         set_app_windows_version(source.name, winver, current)
