@@ -119,7 +119,8 @@ class ImportScriptDialog(QDialog):
         hint = QLabel(
             "Winetricks packages are downloaded and installed into the prefix you pick. "
             "Screensaver files are not in the script — matching items already in your "
-            "library receive the listed settings. Game scripts apply recorded autoplay only."
+            "library receive the listed settings, and their .scr / companion files are "
+            "copied into that prefix. Game scripts apply recorded autoplay only."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)

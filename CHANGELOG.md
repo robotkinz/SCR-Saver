@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5-alpha — 2026-10-17
+
+- Right-click a screensaver → Wine prefix to copy the .scr and companion files into another bottle
+- Importing a compatibility script also copies matching library files into the prefix you pick
+
 ## 0.1.4-alpha — 2026-10-17
 
 - ScreenTime for Flash savers (FLCL and similar) now play the companion projector, not just the Gainax logo

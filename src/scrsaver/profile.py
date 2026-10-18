@@ -259,6 +259,14 @@ def apply_profile(
             result.savers_missing.append(recipe.name or recipe.filename)
             continue
         _apply_saver_recipe(entry, recipe, key, result)
+        try:
+            wineutil.stage_entry(entry, session)
+            say(f"Copied {entry.filename} into the prefix")
+        except Exception as exc:
+            result.warnings.append(
+                f"{entry.name}: could not copy files into the prefix ({exc})"
+            )
+            say(result.warnings[-1])
         result.savers_updated.append(entry.name)
 
     for recipe in profile.games:

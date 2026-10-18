@@ -53,6 +53,15 @@ from .settings import AdditionalSettingsDialog
 log = logging.getLogger(__name__)
 
 
+def _same_prefix(name: str, current: str) -> bool:
+    """Empty string and 'wineprefix' both mean the default bottle."""
+    left = (name or "").strip()
+    right = (current or "").strip()
+    if left in ("", "wineprefix"):
+        left = ""
+    if right in ("", "wineprefix"):
+        right = ""
+    return left == right
 
 
 def load_app_icon() -> QIcon:
@@ -324,6 +333,8 @@ class MainWindow(QMainWindow):
             else:
                 tooltip = str(entry.linux_path())
             tooltip += f"\nWine/Proton: {runner_display(entry.wine_runner)}"
+            prefix_label = entry.wine_prefix or "wineprefix (default)"
+            tooltip += f"\nPrefix: {prefix_label}"
             if entry.interactive:
                 key = self.cfg.interactive_exit_key or "Escape"
                 tooltip += f"\nInteractive demo ({key} to exit)"
@@ -741,6 +752,26 @@ class MainWindow(QMainWindow):
         if current != SYSTEM_ID and get_runner(current) is None:
             missing = wine_menu.addAction(f"{current} (not found)")
             missing.setEnabled(False)
+        prefix_menu = menu.addMenu("Wine prefix")
+        prefix_group = QActionGroup(prefix_menu)
+        prefix_group.setExclusive(True)
+        current_prefix = entry.wine_prefix or ""
+        for label, name, runner_id in wineutil.available_prefixes(self.cfg):
+            action = prefix_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(_same_prefix(name, current_prefix))
+            prefix_group.addAction(action)
+            action.triggered.connect(
+                lambda checked, pname=name, rid=runner_id, item_id=entry.id: checked
+                and self._set_entry_prefix(item_id, pname, rid)
+            )
+        prefix_menu.addSeparator()
+        new_prefix_action = prefix_menu.addAction("Create new prefix…")
+        new_prefix_action.triggered.connect(
+            lambda _checked=False, item_id=entry.id: self._new_prefix_for_entry(item_id)
+        )
+        if entry.is_steam() and not entry.wine_prefix:
+            prefix_menu.setEnabled(False)
         menu.addSeparator()
         winecfg_action = menu.addAction("Wine configuration…")
         winecfg_action.triggered.connect(lambda: self._ensure_wine(tool="winecfg"))
@@ -792,6 +823,55 @@ class MainWindow(QMainWindow):
         self._settings_dialog.show()
         self._settings_dialog.raise_()
         self._settings_dialog.activateWindow()
+
+    def _set_entry_prefix(self, sid: str, prefix_name: str, runner_id: str = "") -> None:
+        entry = self.cfg.entry_by_id(sid)
+        if entry is None:
+            return
+        if self.controller.player.is_playing() and self.controller.player.playing_name() == entry.name:
+            self.controller.stop_playback()
+        key = prefix_name if prefix_name not in ("", "wineprefix") else ""
+        entry.wine_prefix = key
+        if runner_id:
+            entry.wine_runner = "" if runner_id == SYSTEM_ID else runner_id
+        save_config(self.cfg)
+        dest_name = key or "wineprefix"
+        if entry.is_steam() or entry.launch_kind == "prefix_exe":
+            self.status.setText(f"{entry.name}: will use prefix {dest_name}.")
+            self._reload_list()
+            return
+        try:
+            session = wineutil.session_for(entry)
+            wineutil.stage_entry(entry, session)
+        except Exception as exc:
+            self._show_error(str(exc))
+            self.status.setText(
+                f"{entry.name}: prefix set to {dest_name}, but files were not copied ({exc})."
+            )
+            self._reload_list()
+            return
+        extras = f" and {len(entry.extras)} companion file(s)" if entry.extras else ""
+        self.status.setText(f"{entry.name}: copied{extras} into prefix {dest_name}.")
+        self._reload_list()
+
+    def _new_prefix_for_entry(self, sid: str) -> None:
+        from .prefix_wizard import PrefixSetupWizard
+
+        wizard = PrefixSetupWizard(self.cfg, self)
+        wizard.exec()
+        if not wizard.created_name:
+            return
+        if not wizard.imported_script:
+            from .profile_dialog import offer_import_after_wizard
+
+            offer_import_after_wizard(
+                self.cfg,
+                self,
+                wizard.created_name,
+                wizard.created_runner_id,
+                self._reload_list,
+            )
+        self._set_entry_prefix(sid, wizard.created_name, wizard.created_runner_id)
 
     def _set_entry_runner(self, sid: str, runner_id: str) -> None:
         entry = self.cfg.entry_by_id(sid)
