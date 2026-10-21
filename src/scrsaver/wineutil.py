@@ -711,6 +711,37 @@ def setup_prefix(session: WineSession | None = None) -> None:
                 timeout=60,
             )
         (prefix / "drive_c" / "scrsaver").mkdir(parents=True, exist_ok=True)
+        _disable_emulated_modeset(current, env)
+
+
+def _disable_emulated_modeset(session: WineSession, env: dict[str, str] | None = None) -> None:
+    """Stop Wine from letterboxing old 640x480 / 800x600 mode changes in the corner."""
+    reg = session.prefix / "user.reg"
+    try:
+        text = reg.read_bytes()
+    except OSError:
+        return
+    if b"EmulateModeset" not in text:
+        return
+    wine = wine_binary(session)
+    completed = subprocess.run(
+        [
+            wine,
+            "reg",
+            "delete",
+            r"HKCU\Software\Wine\X11 Driver",
+            "/v",
+            "EmulateModeset",
+            "/f",
+        ],
+        env=env or wine_env(session),
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+    )
+    if completed.returncode == 0:
+        log.info("Cleared Wine EmulateModeset in %s (it was letterboxing savers)", session.prefix)
 
 
 def open_winecfg(session: WineSession) -> None:

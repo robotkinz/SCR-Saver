@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.7-alpha — 2026-10-21
+
+- Hovering a screensaver in the list shows which Wine prefix it uses
+
+## 0.1.6-alpha — 2026-10-21
+
+- About window in the tray menu shows the installed version
+- Wine no longer letterboxes old savers after the Graphics tab is used to emulate a virtual desktop
+
 ## 0.1.5-alpha — 2026-10-17
 
 - Right-click a screensaver → Wine prefix to copy the .scr and companion files into another bottle

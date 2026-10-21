@@ -40,7 +40,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from . import paths, wineutil
+from . import __version__, paths, wineutil
 from .config import AppConfig, save_config
 from .daemon import SaverController
 from .library import import_any, others_sharing_prefix, remove_screensaver
@@ -284,6 +284,8 @@ class MainWindow(QMainWindow):
         test_action.triggered.connect(self._test_or_stop)
         extra_action = QAction("Additional Settings", self)
         extra_action.triggered.connect(self._open_additional_settings)
+        about_action = QAction("About…", self)
+        about_action.triggered.connect(self._show_about)
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self.quit_app)
         menu.addAction(show_action)
@@ -292,6 +294,7 @@ class MainWindow(QMainWindow):
         self.tray_display_menu = menu.addMenu("Display")
         menu.addSeparator()
         menu.addAction(extra_action)
+        menu.addAction(about_action)
         menu.addSeparator()
         menu.addAction(quit_action)
         menu.aboutToShow.connect(self._rebuild_tray_display_menu)
@@ -326,15 +329,15 @@ class MainWindow(QMainWindow):
                 extra.append("missing")
             item = QListWidgetItem(f"{label}  ({', '.join(extra)})")
             item.setData(Qt.ItemDataRole.UserRole, entry.id)
-            if entry.is_steam():
-                tooltip = f"Steam app {entry.steam_appid}"
-            elif entry.exe_path:
-                tooltip = entry.exe_path
-            else:
-                tooltip = str(entry.linux_path())
-            tooltip += f"\nWine/Proton: {runner_display(entry.wine_runner)}"
             prefix_label = entry.wine_prefix or "wineprefix (default)"
-            tooltip += f"\nPrefix: {prefix_label}"
+            tooltip = f"Wine prefix: {prefix_label}"
+            tooltip += f"\nWine/Proton: {runner_display(entry.wine_runner)}"
+            if entry.is_steam():
+                tooltip += f"\nSteam app {entry.steam_appid}"
+            elif entry.exe_path:
+                tooltip += f"\n{entry.exe_path}"
+            else:
+                tooltip += f"\n{entry.linux_path()}"
             if entry.interactive:
                 key = self.cfg.interactive_exit_key or "Escape"
                 tooltip += f"\nInteractive demo ({key} to exit)"
@@ -1036,6 +1039,19 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    def _show_about(self) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("About SCR Saver")
+        box.setIconPixmap(load_app_icon().pixmap(64, 64))
+        box.setText(f"SCR Saver {__version__}")
+        box.setInformativeText(
+            "Play Windows .scr screensavers on Linux when idle.\n\n"
+            "https://github.com/robotkinz/SCR-Saver\n"
+            "MIT License"
+        )
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (
