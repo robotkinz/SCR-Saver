@@ -94,12 +94,19 @@ def import_scr_file(
     extras: list[Path] | None = None,
     wine_runner: str = "",
     wine_prefix: str = "",
+    expand_afterdark: bool = True,
 ) -> ScreensaverEntry:
     source = source.expanduser().resolve()
+    from .afterdark import expand_prefix, is_host_file
+
     machine, arch = validate_scr(source)
     digest = file_sha256(source)
     duplicate = _already_imported(cfg, digest, source.name)
     if duplicate is not None:
+        if expand_afterdark and is_host_file(source):
+            created = expand_prefix(cfg, wine_prefix or duplicate.wine_prefix)
+            if created:
+                return created[0]
         raise FileExistsError(f'"{duplicate.name}" is already in the library.')
     filename = unique_filename(source.name)
     dest = paths.library_dir() / filename
@@ -137,6 +144,10 @@ def import_scr_file(
         cfg.selected_id = entry.id
     log.info("Imported %s (%s) as %s", source, arch, dest)
     del machine
+    if expand_afterdark and is_host_file(dest):
+        created = expand_prefix(cfg, wine_prefix)
+        if created:
+            return created[0]
     return entry
 
 
@@ -146,7 +157,10 @@ def import_any(cfg: AppConfig, source: Path) -> list[ScreensaverEntry]:
         return _import_tree(cfg, source)
     suffix = source.suffix.lower()
     if suffix == ".scr":
-        return [import_scr_file(cfg, source)]
+        before = {item.id for item in cfg.screensavers}
+        entry = import_scr_file(cfg, source)
+        created = [item for item in cfg.screensavers if item.id not in before]
+        return created or [entry]
     if suffix in ARCHIVE_SUFFIXES or (suffix == ".exe" and looks_like_installer(source)):
         return _import_container(cfg, source)
     if suffix == ".exe":
@@ -194,12 +208,14 @@ def _import_tree(cfg: AppConfig, root: Path) -> list[ScreensaverEntry]:
         raise NotScreensaverError(f"No .scr files found in {root.name}.")
     imported: list[ScreensaverEntry] = []
     for path in files:
+        before = {item.id for item in cfg.screensavers}
         try:
-            imported.append(import_scr_file(cfg, path))
+            import_scr_file(cfg, path)
         except FileExistsError:
             continue
         except NotScreensaverError:
             continue
+        imported.extend(item for item in cfg.screensavers if item.id not in before)
     if not imported:
         raise FileExistsError(f"Every screensaver in {root.name} is already in the library.")
     return imported

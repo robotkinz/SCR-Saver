@@ -17,6 +17,7 @@ from .runners import SYSTEM_ID, WineRunner, get_runner
 log = logging.getLogger(__name__)
 
 WINE_DESKTOP_PREFIX = "SCRSAVER"
+WINE_DEFAULT_DPI = 96
 _PREFIX_LOCK = threading.Lock()
 
 
@@ -179,6 +180,87 @@ def cpu_policy_for(session: WineSession) -> tuple[float, bool]:
     return 100.0, False
 
 
+def dpi_for(session: WineSession) -> int:
+    try:
+        from .config import load_config
+
+        cfg = load_config()
+    except Exception:
+        return 0
+    key = prefix_record_name(session.prefix)
+    for item in getattr(cfg, "managed_prefixes", []) or []:
+        if item.name == key or (key == "wineprefix" and item.name in ("", "wineprefix")):
+            try:
+                return max(0, min(480, int(getattr(item, "dpi", 0) or 0)))
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def read_log_pixels(prefix: Path) -> int:
+    """Current Wine DPI for a prefix (96 is the Windows default)."""
+    reg = Path(prefix) / "user.reg"
+    try:
+        raw = reg.read_bytes()
+    except OSError:
+        return WINE_DEFAULT_DPI
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        text = raw.decode("utf-16", errors="replace")
+    else:
+        text = raw.decode("utf-8", errors="replace")
+    import re
+
+    match = re.search(
+        r"\[Control Panel\\\\Desktop\][^\[]*?\"LogPixels\"=dword:([0-9a-fA-F]+)",
+        text,
+    )
+    if match is None:
+        match = re.search(
+            r"\[Software\\\\Wine\\\\Fonts\][^\[]*?\"LogPixels\"=dword:([0-9a-fA-F]+)",
+            text,
+        )
+    if match is None:
+        return WINE_DEFAULT_DPI
+    try:
+        value = int(match.group(1), 16)
+    except ValueError:
+        return WINE_DEFAULT_DPI
+    if value < 72 or value > 480:
+        return WINE_DEFAULT_DPI
+    return value
+
+
+def set_log_pixels(session: WineSession, dpi: int, *, setup: bool = True) -> None:
+    """Set Wine DPI (LogPixels) so 3D savers can fill the virtual desktop."""
+    value = max(WINE_DEFAULT_DPI, min(480, int(dpi)))
+    if setup:
+        setup_prefix(session)
+    wine = wine_binary(session)
+    env = wine_env(session)
+    for key in (r"HKCU\Control Panel\Desktop", r"HKCU\Software\Wine\Fonts"):
+        subprocess.run(
+            [
+                wine,
+                "reg",
+                "add",
+                key,
+                "/v",
+                "LogPixels",
+                "/t",
+                "REG_DWORD",
+                "/d",
+                str(value),
+                "/f",
+            ],
+            env=env,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+    log.info("Wine DPI %s in %s", value, session.prefix)
+
+
 def popen_wine(
     session: WineSession,
     argv: list[str],
@@ -265,6 +347,105 @@ def launch_exe(session: WineSession, linux_path: Path) -> None:
     setup_prefix(session)
     wine_path = linux_to_wine_path(linux_path)
     popen_wine(session, [session.wine, wine_path])
+
+
+def launch_windows_installer(session: WineSession, linux_path: Path) -> None:
+    """Launch a Windows setup.exe, staging After Dark-style INF installers first."""
+    setup_prefix(session)
+    source = Path(linux_path).expanduser()
+    try:
+        source = source.resolve()
+    except OSError:
+        source = Path(linux_path)
+    staged = _stage_inf_installer(session, source)
+    if staged is None:
+        popen_wine(session, [session.wine, linux_to_wine_path(source)])
+        return
+    wine_path = "C:\\adcd\\" + staged.name
+    log.info("Windows installer desktop 800x600: %s", wine_path)
+    popen_wine(
+        session,
+        [session.wine, "explorer", "/desktop=SCRSETUP,800x600", wine_path],
+    )
+
+
+def _find_named(folder: Path, name: str) -> Path | None:
+    wanted = name.lower()
+    try:
+        for path in folder.iterdir():
+            if path.name.lower() == wanted:
+                return path
+    except OSError:
+        return None
+    return None
+
+
+def _stage_inf_installer(session: WineSession, exe: Path) -> Path | None:
+    """Copy an INF-based setup (After Dark ADESETUP, etc.) to C:\\adcd and fix INF comments."""
+    if not exe.is_file():
+        return None
+    parent = exe.parent
+    folder: Path | None = None
+    chosen: Path | None = None
+    ade = _find_named(parent, "ade")
+    if exe.name.lower() == "setup.exe" and ade is not None and ade.is_dir():
+        inf = _find_named(ade, "setup.inf")
+        staged_exe = _find_named(ade, "adesetup.exe")
+        if inf is not None and staged_exe is not None:
+            folder, chosen = ade, staged_exe
+    if folder is None:
+        inf = _find_named(parent, "setup.inf")
+        if inf is None:
+            return None
+        folder = parent
+        chosen = _find_named(parent, "adesetup.exe") or exe
+    dest_root = session.prefix / "drive_c" / "adcd"
+    log.info("Copying installer from %s to %s", folder, dest_root)
+    if dest_root.exists():
+        shutil.rmtree(dest_root)
+    shutil.copytree(folder, dest_root)
+    for path in [dest_root, *dest_root.rglob("*")]:
+        try:
+            os.chmod(path, 0o755 if path.is_dir() else 0o644)
+        except OSError:
+            pass
+    dest_exe = dest_root / chosen.name
+    if not dest_exe.is_file():
+        match = _find_named(dest_root, chosen.name)
+        dest_exe = match if match is not None else dest_exe
+    inf_dest = _find_named(dest_root, "setup.inf")
+    if inf_dest is not None:
+        _strip_inf_file_comments(inf_dest)
+    if not dest_exe.is_file():
+        log.warning("Staged installer is missing %s", chosen.name)
+        return None
+    return dest_exe
+
+
+def _strip_inf_file_comments(inf: Path) -> None:
+    """Drop trailing ;; comments on FileN= lines that break 90s INF parsers."""
+    try:
+        text = inf.read_text(encoding="latin-1", errors="replace")
+    except OSError as exc:
+        log.warning("Could not read %s: %s", inf, exc)
+        return
+    lines: list[str] = []
+    changed = False
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.lower().startswith("file") and ";;" in line:
+            cleaned = line.split(";;", 1)[0].rstrip(" \t")
+            if cleaned != line:
+                line = cleaned
+                changed = True
+        lines.append(line)
+    if not changed:
+        return
+    try:
+        inf.write_text("\n".join(lines) + "\n", encoding="latin-1")
+        log.info("Stripped INF FileN comments in %s", inf)
+    except OSError as exc:
+        log.warning("Could not rewrite %s: %s", inf, exc)
 
 
 def list_prefix_screensavers(prefix: Path) -> list[Path]:
@@ -712,6 +893,16 @@ def setup_prefix(session: WineSession | None = None) -> None:
             )
         (prefix / "drive_c" / "scrsaver").mkdir(parents=True, exist_ok=True)
         _disable_emulated_modeset(current, env)
+        _apply_managed_dpi(current)
+
+
+def _apply_managed_dpi(session: WineSession) -> None:
+    wanted = dpi_for(session)
+    if wanted < WINE_DEFAULT_DPI:
+        return
+    if read_log_pixels(session.prefix) == wanted:
+        return
+    set_log_pixels(session, wanted, setup=False)
 
 
 def _disable_emulated_modeset(session: WineSession, env: dict[str, str] | None = None) -> None:
@@ -746,7 +937,22 @@ def _disable_emulated_modeset(session: WineSession, env: dict[str, str] | None =
 
 def open_winecfg(session: WineSession) -> None:
     setup_prefix(session)
-    popen_wine(session, [session.wine, "winecfg"])
+    saved = read_log_pixels(session.prefix)
+    managed = dpi_for(session)
+    restore = managed if managed >= WINE_DEFAULT_DPI else saved
+    if restore != WINE_DEFAULT_DPI:
+        set_log_pixels(session, WINE_DEFAULT_DPI, setup=False)
+    proc = popen_wine(session, [session.wine, "winecfg"])
+    if restore != WINE_DEFAULT_DPI:
+
+        def _restore() -> None:
+            proc.wait()
+            try:
+                set_log_pixels(session, restore, setup=False)
+            except Exception:
+                log.exception("Could not restore Wine DPI %s", restore)
+
+        threading.Thread(target=_restore, daemon=True).start()
 
 
 def open_winetricks(session: WineSession) -> None:

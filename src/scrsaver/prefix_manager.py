@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -149,6 +150,25 @@ class PrefixManagerDialog(QDialog):
         fps_note.setWordWrap(True)
         speed_form.addRow(fps_note)
         right.addWidget(speed)
+
+        display = QGroupBox("Display")
+        display_form = QFormLayout(display)
+        dpi_hint = QLabel(
+            "Some 3D savers (Space, Inside your Computer) need a DPI other than 96 "
+            "to fill the screen. Set it here. Wine configuration does not resize "
+            "with DPI, so the Graphics tab slider can push its own controls off-screen."
+        )
+        dpi_hint.setWordWrap(True)
+        display_form.addRow(dpi_hint)
+        self.dpi = QSpinBox()
+        self.dpi.setRange(wineutil.WINE_DEFAULT_DPI, 480)
+        self.dpi.setSuffix(" DPI")
+        self.dpi.setToolTip(
+            "Windows default is 96. Try 122 if a saver draws in a small corner or looks stretched."
+        )
+        self.dpi.valueChanged.connect(self._save_dpi)
+        display_form.addRow("DPI", self.dpi)
+        right.addWidget(display)
 
         tools = QGroupBox("Wine tools")
         tools_l = QHBoxLayout(tools)
@@ -303,6 +323,10 @@ class PrefixManagerDialog(QDialog):
         self.single_core.blockSignals(True)
         self.single_core.setChecked(rec.single_core)
         self.single_core.blockSignals(False)
+        shown_dpi = rec.dpi if rec.dpi >= wineutil.WINE_DEFAULT_DPI else wineutil.read_log_pixels(path)
+        self.dpi.blockSignals(True)
+        self.dpi.setValue(shown_dpi)
+        self.dpi.blockSignals(False)
         self._update_slider_label(percent)
         if self._is_default():
             self.delete_btn.setText("Delete this prefix…")
@@ -377,6 +401,17 @@ class PrefixManagerDialog(QDialog):
             rec.cpu_percent = float(self.slider.value())
             rec.single_core = self.single_core.isChecked()
         save_config(self.cfg)
+
+    def _save_dpi(self) -> None:
+        if self._loading or not self._current_name():
+            return
+        rec = self._record()
+        rec.dpi = int(self.dpi.value())
+        save_config(self.cfg)
+        try:
+            wineutil.set_log_pixels(self._session(), rec.dpi)
+        except Exception as exc:
+            QMessageBox.warning(self, "Wine DPI", str(exc))
 
     def _winecfg(self) -> None:
         try:

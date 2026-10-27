@@ -40,6 +40,8 @@ class ScreensaverEntry:
     keystrokes: list[dict] = field(default_factory=list)
     keystroke_loop: bool = False
     stop_on_input: bool = False
+    ad_folder: str = ""
+    ad_module: str = ""
 
     def linux_path(self) -> Path:
         return paths.library_dir() / self.filename
@@ -49,6 +51,9 @@ class ScreensaverEntry:
 
     def is_prefix_exe(self) -> bool:
         return self.launch_kind == LAUNCH_PREFIX_EXE or bool(self.exe_path)
+
+    def is_afterdark(self) -> bool:
+        return bool(self.ad_module)
 
     def is_playable(self) -> bool:
         if self.is_steam():
@@ -70,6 +75,7 @@ class ManagedPrefix:
     cpu_percent: float = 100.0
     single_core: bool = False
     fps_limit: int = 0
+    dpi: int = 0
     origin: str = ORIGIN_OWNED
     source_path: str = ""
     steam_appid: str = ""
@@ -215,6 +221,7 @@ def load_config() -> AppConfig:
                 cpu_percent=_coerce_cpu_percent(item.get("cpu_percent")),
                 single_core=bool(item.get("single_core", False)),
                 fps_limit=_coerce_int(item.get("fps_limit"), 0, 0, 120),
+                dpi=_coerce_int(item.get("dpi"), 0, 0, 480),
                 origin=origin,
                 source_path=str(item.get("source_path") or ""),
                 steam_appid=str(item.get("steam_appid") or ""),
@@ -252,6 +259,8 @@ def load_config() -> AppConfig:
                 keystrokes=_coerce_keystrokes(item.get("keystrokes")),
                 keystroke_loop=bool(item.get("keystroke_loop", False)),
                 stop_on_input=bool(item.get("stop_on_input", False)),
+                ad_folder=str(item.get("ad_folder") or ""),
+                ad_module=str(item.get("ad_module") or ""),
             )
         )
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QGuiApplication
 
-from . import steam, wineutil
+from . import htmlplay, steam, wineutil
 from .config import LAUNCH_PREFIX_EXE, LAUNCH_STEAM, ScreensaverEntry
 from .keystrokes import InputEmulator, KeystrokePlayback
 
@@ -123,6 +123,19 @@ class Player(QObject):
                     return
             self._play_steam(entry)
             return
+        source = entry.linux_path()
+        if source.is_file() and htmlplay.is_html_wrapper(source):
+            targets = screen_targets(display_mode)
+            if skip_outputs:
+                targets = [target for target in targets if target.name not in skip_outputs]
+            if tile:
+                targets = _apply_tiling(
+                    targets, hide_decorations=hide_decorations, scale_content=scale_content
+                )
+            if not _have_targets(targets, require_screen, tile, self.failed.emit):
+                return
+            self._play_html(entry, source, targets)
+            return
         try:
             session = wineutil.session_for(entry)
         except FileNotFoundError as exc:
@@ -170,6 +183,14 @@ class Player(QObject):
         except OSError as exc:
             self.failed.emit(f"Could not stage screensaver for Wine: {exc}")
             return
+        if getattr(entry, "ad_module", ""):
+            from .afterdark import select_module
+
+            try:
+                select_module(session, entry.ad_folder, entry.ad_module)
+            except Exception as exc:
+                self.failed.emit(f"Could not select After Dark module {entry.ad_module}: {exc}")
+                return
 
         env = wineutil.wine_env(session)
         procs: list[subprocess.Popen[bytes]] = []
@@ -231,6 +252,61 @@ class Player(QObject):
         self._watch_timer.start()
         self.started.emit(entry.name)
         self._arm_macro(entry)
+
+    def _play_html(self, entry: ScreensaverEntry, source: Path, targets: list[ScreenTarget]) -> None:
+        try:
+            html_dir = htmlplay.prepare(source)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        if self.is_playing():
+            self.stop()
+        procs: list[subprocess.Popen[bytes]] = []
+        try:
+            for target in targets:
+                cmd = htmlplay.browser_cmd(
+                    html_dir,
+                    x=target.x,
+                    y=target.y,
+                    width=target.width,
+                    height=target.height,
+                    desktop=target.desktop,
+                    kiosk=not target.tiled,
+                )
+                log.info("Launching HTML screensaver %s", " ".join(cmd[:8]))
+                env = dict(os.environ)
+                procs.append(
+                    subprocess.Popen(
+                        cmd,
+                        env=env,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                )
+        except FileNotFoundError as exc:
+            for proc in procs:
+                _terminate_group(proc)
+            self.failed.emit(str(exc))
+            return
+        except OSError as exc:
+            for proc in procs:
+                _terminate_group(proc)
+            self.failed.emit(f"Could not start the HTML screensaver: {exc}")
+            return
+        self._procs = procs
+        self._targets = targets
+        self._playing_name = entry.name
+        self._started_at = time.monotonic()
+        self._session_active = True
+        self._wine_session = None
+        self._interactive = bool(getattr(entry, "interactive", False))
+        self._muted_leaders = set()
+        self._place_tries = 0
+        self._place_by_pid = True
+        self._place_timer.start()
+        self._watch_timer.start()
+        self.started.emit(entry.name)
 
     def _play_steam(self, entry: ScreensaverEntry) -> None:
         appid = str(entry.steam_appid or "").strip()
@@ -428,6 +504,15 @@ class Player(QObject):
         except Exception as exc:
             self.failed.emit(str(exc))
             return
+        if getattr(entry, "ad_module", ""):
+            from .afterdark import open_settings, select_module
+
+            try:
+                select_module(session, entry.ad_folder, entry.ad_module)
+                open_settings(session)
+            except Exception as exc:
+                self.failed.emit(f"Could not open After Dark settings: {exc}")
+            return
         cmd = [wine, wine_path, "/c"]
         log.info("Configure %s", " ".join(cmd))
         try:
@@ -486,9 +571,15 @@ class Player(QObject):
     def _try_place_windows(self) -> None:
         self._place_tries += 1
         tiled = any(target.tiled for target in self._targets)
-        stop_after = 12 if tiled else 1
-        if self._place_by_pid and self._wine_session is not None and self._targets:
-            placed = _place_prefix_windows(self._wine_session, self._targets[0], self._playing_name)
+        html = self._place_by_pid and self._wine_session is None
+        stop_after = 12 if tiled or html else 1
+        if self._place_by_pid and self._targets:
+            if self._wine_session is not None:
+                placed = _place_prefix_windows(
+                    self._wine_session, self._targets[0], self._playing_name
+                )
+            else:
+                placed = _place_html_windows(self._procs, self._targets)
             if (placed and self._place_tries >= stop_after) or self._place_tries >= WINDOW_PLACE_ATTEMPTS:
                 self._place_timer.stop()
             return
@@ -672,6 +763,51 @@ def _place_prefix_windows(session, target: ScreenTarget, title: str) -> bool:
         _apply_window_geometry(wid, target)
         _run_quiet(["wmctrl", "-i", "-a", wid])
         placed = True
+    return placed
+
+
+def _place_html_windows(procs: list[subprocess.Popen[bytes]], targets: list[ScreenTarget]) -> bool:
+    placed = True
+    missing: list[tuple[int, ScreenTarget]] = []
+    for index, target in enumerate(targets):
+        wid = ""
+        if index < len(procs) and procs[index].pid:
+            wid = _find_window_for_pids(_descendant_pids(procs[index].pid))
+        if not wid:
+            wid = _find_window_by_class(target.desktop)
+        if not wid:
+            placed = False
+            if index < len(procs) and procs[index].pid:
+                missing.append((procs[index].pid, target))
+            continue
+        log.info(
+            "Placing HTML screensaver on %s at %d,%d (%dx%d)",
+            target.name,
+            target.x,
+            target.y,
+            target.width,
+            target.height,
+        )
+        _apply_window_geometry(wid, target)
+    if missing:
+        from .tile import place_windows_by_pid
+
+        jobs: list[tuple[set[int], int, int, int, int, bool, bool]] = []
+        for pid, target in missing:
+            jobs.append(
+                (
+                    _descendant_pids(pid) | {pid},
+                    target.x,
+                    target.y,
+                    target.width,
+                    target.height,
+                    not target.tiled,
+                    (not target.tiled) or target.undecorated,
+                )
+            )
+        if place_windows_by_pid(jobs):
+            log.info("Placed %d HTML screensaver window(s) with KWin", len(jobs))
+            placed = True
     return placed
 
 

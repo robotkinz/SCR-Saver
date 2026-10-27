@@ -414,7 +414,7 @@ class AdditionalSettingsDialog(QDialog):
             return
         before = wineutil.list_prefix_screensavers(session.prefix)
         try:
-            wineutil.launch_exe(session, Path(path))
+            wineutil.launch_windows_installer(session, Path(path))
         except Exception as ext:
             QMessageBox.warning(self, "SCR Saver", str(ext))
             return
@@ -445,13 +445,14 @@ class AdditionalSettingsDialog(QDialog):
         stored_prefix = session.prefix.name
         for source in new_files:
             try:
+                before = {item.id for item in self.cfg.screensavers}
                 import_scr_file(
                     self.cfg,
                     source,
                     wine_runner="" if runner_id == SYSTEM_ID else runner_id,
                     wine_prefix=stored_prefix,
                 )
-                imported += 1
+                imported += max(1, len([item for item in self.cfg.screensavers if item.id not in before]))
             except FileExistsError as exc:
                 errors.append(str(exc))
             except (OSError, NotScreensaverError) as exc:
@@ -465,3 +466,6 @@ class AdditionalSettingsDialog(QDialog):
         if errors:
             message += "\n\n" + "\n".join(errors)
         QMessageBox.information(self, "SCR Saver", message)
+        from .profile_dialog import offer_export_after_installer
+
+        offer_export_after_installer(self.cfg, self, stored_prefix)

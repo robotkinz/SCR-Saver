@@ -37,6 +37,18 @@ class WineNeeds:
 
 
 @dataclass
+class InstallerHint:
+    """A Windows product the user installs from their own disc or setup.exe."""
+
+    product: str = ""
+    note: str = ""
+    exe_names: list[str] = field(default_factory=list)
+
+    def present(self) -> bool:
+        return bool(self.product or self.note or self.exe_names)
+
+
+@dataclass
 class SaverRecipe:
     name: str = ""
     filename: str = ""
@@ -51,6 +63,8 @@ class SaverRecipe:
     keystrokes: list[dict] = field(default_factory=list)
     keystroke_loop: bool = False
     stop_on_input: bool = False
+    ad_folder: str = ""
+    ad_module: str = ""
 
 
 @dataclass
@@ -73,6 +87,8 @@ class ProfileScript:
     wine: WineNeeds = field(default_factory=WineNeeds)
     cpu_percent: float = 100.0
     single_core: bool = False
+    dpi: int = 0
+    installer: InstallerHint = field(default_factory=InstallerHint)
     screensavers: list[SaverRecipe] = field(default_factory=list)
     games: list[GameRecipe] = field(default_factory=list)
 
@@ -86,6 +102,7 @@ class ApplyResult:
     games_updated: list[str] = field(default_factory=list)
     games_missing: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    installer: InstallerHint = field(default_factory=InstallerHint)
 
 
 def load_profile(path: Path) -> ProfileScript:
@@ -108,6 +125,12 @@ def load_profile(path: Path) -> ProfileScript:
         cpu = float(prefix_raw.get("cpu_percent", raw.get("cpu_percent", 100)))
     except (TypeError, ValueError):
         cpu = 100.0
+    inst_raw = raw.get("installer") if isinstance(raw.get("installer"), dict) else {}
+    installer = InstallerHint(
+        product=str(inst_raw.get("product") or ""),
+        note=str(inst_raw.get("note") or ""),
+        exe_names=_string_list(inst_raw.get("exe_names")),
+    )
     return ProfileScript(
         name=str(raw.get("name") or path.stem),
         description=str(raw.get("description") or ""),
@@ -115,6 +138,8 @@ def load_profile(path: Path) -> ProfileScript:
         wine=wine,
         cpu_percent=max(0.3, min(100.0, cpu)),
         single_core=bool(prefix_raw.get("single_core", raw.get("single_core", False))),
+        dpi=_coerce_dpi(prefix_raw.get("dpi", raw.get("dpi", 0))),
+        installer=installer,
         screensavers=[_saver_from_raw(item) for item in raw.get("screensavers") or [] if isinstance(item, dict)],
         games=[_game_from_raw(item) for item in raw.get("games") or [] if isinstance(item, dict)],
     )
@@ -136,10 +161,17 @@ def dump_profile(profile: ProfileScript) -> str:
         "prefix": {
             "cpu_percent": profile.cpu_percent,
             "single_core": profile.single_core,
+            "dpi": profile.dpi,
         },
-        "screensavers": [asdict(item) for item in profile.screensavers],
+        "screensavers": [_saver_payload(item) for item in profile.screensavers],
         "games": [asdict(item) for item in profile.games],
     }
+    if profile.installer.present():
+        payload["installer"] = {
+            "product": profile.installer.product,
+            "exe_names": profile.installer.exe_names,
+            "note": profile.installer.note,
+        }
     return json.dumps(payload, indent=2) + "\n"
 
 
@@ -170,9 +202,14 @@ def export_prefix(cfg: AppConfig, prefix_name: str) -> ProfileScript:
             runners.append(recipe.wine_runner)
     shared_winver = winvers[0] if winvers and all(item == winvers[0] for item in winvers) else ""
     shared_runner = runners[0] if runners and all(item == runners[0] for item in runners) else ""
-    kind = "game" if games and not savers and not verbs else "prefix"
+    installer = detect_installer_hint(folder)
+    if installer.product and not shared_winver:
+        shared_winver = "win98"
+    kind = "game" if games and not savers and not verbs and not installer.present() else "prefix"
     label = "Default bottle" if key in ("", "wineprefix") else key
     bits = []
+    if installer.product:
+        bits.append(installer.product)
     if verbs:
         bits.append(f"{len(verbs)} Winetricks package(s)")
     if savers:
@@ -184,7 +221,7 @@ def export_prefix(cfg: AppConfig, prefix_name: str) -> ProfileScript:
         + (f": {', '.join(bits)}." if bits else ".")
     )
     return ProfileScript(
-        name=label,
+        name=installer.product or label,
         description=description,
         kind=kind,
         wine=WineNeeds(
@@ -194,6 +231,8 @@ def export_prefix(cfg: AppConfig, prefix_name: str) -> ProfileScript:
         ),
         cpu_percent=float(rec.cpu_percent) if rec else 100.0,
         single_core=bool(rec.single_core) if rec else False,
+        dpi=int(rec.dpi) if rec and rec.dpi else 0,
+        installer=installer,
         screensavers=savers,
         games=games,
     )
@@ -250,23 +289,39 @@ def apply_profile(
     rec = _ensure_prefix_record(cfg, key, runner)
     rec.cpu_percent = float(profile.cpu_percent)
     rec.single_core = bool(profile.single_core)
+    if profile.dpi >= 96:
+        rec.dpi = int(profile.dpi)
+        say(f"Wine DPI {rec.dpi}")
+        wineutil.set_log_pixels(session, rec.dpi)
     if profile.wine.runner_hint and get_runner(profile.wine.runner_hint) and not rec.runner_id:
         rec.runner_id = profile.wine.runner_hint
 
+    from .afterdark import expand_prefix
+
+    created = expand_prefix(cfg, key)
+    if created:
+        say(f"Listed {len(created)} After Dark module(s)")
+
+    staged_hosts: set[str] = set()
     for recipe in profile.screensavers:
         entry = _match_saver(cfg, recipe)
         if entry is None:
             result.savers_missing.append(recipe.name or recipe.filename)
             continue
         _apply_saver_recipe(entry, recipe, key, result)
-        try:
-            wineutil.stage_entry(entry, session)
-            say(f"Copied {entry.filename} into the prefix")
-        except Exception as exc:
-            result.warnings.append(
-                f"{entry.name}: could not copy files into the prefix ({exc})"
-            )
-            say(result.warnings[-1])
+        host_key = (entry.filename or "").lower()
+        skip_stage = bool(entry.ad_module) and host_key in staged_hosts
+        if not skip_stage:
+            try:
+                wineutil.stage_entry(entry, session)
+                say(f"Copied {entry.filename} into the prefix")
+                if entry.ad_module:
+                    staged_hosts.add(host_key)
+            except Exception as exc:
+                result.warnings.append(
+                    f"{entry.name}: could not copy files into the prefix ({exc})"
+                )
+                say(result.warnings[-1])
         result.savers_updated.append(entry.name)
 
     for recipe in profile.games:
@@ -279,6 +334,7 @@ def apply_profile(
 
     save_config(cfg)
     say("Saved library settings")
+    result.installer = profile.installer if profile.installer.present() else detect_installer_hint(session.prefix)
     return result
 
 
@@ -300,6 +356,17 @@ def summarize_profile(profile: ProfileScript) -> str:
             wine_bits.append(f"  • {name} = {mode}")
     if profile.wine.runner_hint:
         wine_bits.append(f"Suggested Wine/Proton: {profile.wine.runner_hint}")
+    if profile.installer.present():
+        wine_bits.append("")
+        wine_bits.append(
+            "Windows installer (use your own copy; this script does not include the disc):"
+        )
+        if profile.installer.product:
+            wine_bits.append(f"  • Product: {profile.installer.product}")
+        if profile.installer.exe_names:
+            wine_bits.append("  • Setup names: " + ", ".join(profile.installer.exe_names))
+        if profile.installer.note:
+            wine_bits.append("  • " + profile.installer.note)
     if profile.cpu_percent < 100 or profile.single_core:
         wine_bits.append(
             f"Clock: {profile.cpu_percent:g}% of one CPU"
@@ -312,6 +379,8 @@ def summarize_profile(profile: ProfileScript) -> str:
         lines.append("Screensaver settings (applied to matching files in your library):")
         for item in profile.screensavers:
             bits = [item.name or item.filename]
+            if item.ad_module:
+                bits.append(f"{item.ad_folder}\\{item.ad_module}.ad" if item.ad_folder else f"{item.ad_module}.ad")
             if item.winver:
                 bits.append(f"winver {item.winver}")
             if item.wine_runner:
@@ -339,10 +408,73 @@ def summarize_profile(profile: ProfileScript) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def detect_installer_hint(prefix: Path) -> InstallerHint:
+    """Fill an installer recipe when After Dark (or the same engine layout) is present."""
+    folder = Path(prefix)
+    drive = folder / "drive_c"
+    ad_dir = drive / "After Dark"
+    has_host = False
+    if drive.is_dir():
+        try:
+            for path in drive.rglob("*"):
+                if not path.is_file():
+                    continue
+                name = path.name.lower()
+                if name in ("after dark.scr", "afterdar.scr"):
+                    has_host = True
+                    break
+        except OSError:
+            pass
+    if not ad_dir.is_dir() and not has_host:
+        return InstallerHint()
+    product = "After Dark"
+    blob = _registry_blob(folder)
+    if "After Dark\\4.00" in blob or "After Dark\\\\4.00" in blob:
+        product = "After Dark 4.0"
+    elif "After Dark\\3.00" in blob or "After Dark\\\\3.00" in blob or "After Dark\\3.0" in blob:
+        product = "After Dark 3.0"
+    return InstallerHint(
+        product=product,
+        exe_names=["adesetup.exe", "setup.exe"],
+        note=(
+            "Run Typical Install from your After Dark CD. Prefer ADESETUP.EXE in the "
+            "ADE folder (32-bit); SETUP.EXE at the disc root is 16-bit. SCR Saver "
+            "copies the ADE folder into the prefix and opens the wizard on an 800x600 "
+            "Wine desktop so the 256-color installer is visible. Skip the disc's "
+            "DirectX, After Dark Online, and AT&T WorldNet. Import After Dark.scr as "
+            "the screensaver; the .ad modules stay under C:\\After Dark and are loaded "
+            "by that host. After Dark 3.x uses the same engine-plus-modules layout."
+        ),
+    )
+
+
+def _registry_blob(prefix: Path) -> str:
+    chunks: list[str] = []
+    for name in ("system.reg", "user.reg"):
+        path = Path(prefix) / name
+        if not path.is_file():
+            continue
+        try:
+            chunks.append(wineutil._read_reg_text(path))
+        except OSError:
+            continue
+    return "\n".join(chunks)
+
+
 def default_export_name(prefix_name: str) -> str:
     key = prefix_name or "wineprefix"
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in key).strip("-") or "wineprefix"
     return f"{safe}.scrsaver.json"
+
+
+def _coerce_dpi(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if number <= 0:
+        return 0
+    return max(96, min(480, number))
 
 
 def _string_list(value: Any) -> list[str]:
@@ -374,6 +506,8 @@ def _saver_from_raw(item: dict) -> SaverRecipe:
         keystrokes=_coerce_keystrokes(item.get("keystrokes")),
         keystroke_loop=bool(item.get("keystroke_loop", False)),
         stop_on_input=bool(item.get("stop_on_input", False)),
+        ad_folder=str(item.get("ad_folder") or ""),
+        ad_module=str(item.get("ad_module") or ""),
     )
 
 
@@ -414,6 +548,8 @@ def _saver_from_entry(entry: ScreensaverEntry) -> SaverRecipe:
         keystrokes=list(entry.keystrokes),
         keystroke_loop=entry.keystroke_loop,
         stop_on_input=entry.stop_on_input,
+        ad_folder=entry.ad_folder,
+        ad_module=entry.ad_module,
     )
 
 
@@ -458,19 +594,43 @@ def _ensure_prefix_record(cfg: AppConfig, name: str, runner_id: str) -> ManagedP
     return rec
 
 
+def _saver_payload(item: SaverRecipe) -> dict:
+    data = asdict(item)
+    if not data.get("ad_module"):
+        data.pop("ad_folder", None)
+        data.pop("ad_module", None)
+    return data
+
+
 def _match_saver(cfg: AppConfig, recipe: SaverRecipe) -> ScreensaverEntry | None:
+    if recipe.ad_module:
+        module = recipe.ad_module.lower()
+        folder = (recipe.ad_folder or "").lower()
+        for entry in cfg.screensavers:
+            if entry.ad_module.lower() != module:
+                continue
+            if folder and entry.ad_folder.lower() != folder:
+                continue
+            return entry
+        return None
     if recipe.sha256:
         for entry in cfg.screensavers:
+            if entry.ad_module:
+                continue
             if entry.sha256 and entry.sha256 == recipe.sha256 and not entry.is_steam() and not entry.is_prefix_exe():
                 return entry
     if recipe.filename:
         wanted = recipe.filename.lower()
         for entry in cfg.screensavers:
+            if entry.ad_module:
+                continue
             if entry.filename.lower() == wanted and not entry.is_steam() and not entry.is_prefix_exe():
                 return entry
     if recipe.name:
         wanted = recipe.name.lower()
         for entry in cfg.screensavers:
+            if entry.ad_module:
+                continue
             if entry.name.lower() == wanted and not entry.is_steam() and not entry.is_prefix_exe():
                 return entry
     return None

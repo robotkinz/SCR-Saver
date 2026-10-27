@@ -57,6 +57,16 @@ fi
 if [ -f "$ROOT/native/scrsaver_pace.c" ]; then
   cp "$ROOT/native/scrsaver_pace.c" "$STAGE/native/scrsaver_pace.c"
 fi
+if [ -f "$ROOT/native/afterdark_cfg.c" ]; then
+  cp "$ROOT/native/afterdark_cfg.c" "$STAGE/native/afterdark_cfg.c"
+fi
+if [ -f "$ROOT/native/afterdark_cfg.exe" ]; then
+  cp "$ROOT/native/afterdark_cfg.exe" "$STAGE/native/afterdark_cfg.exe"
+fi
+if [ -f "$ROOT/native/build-afterdark-cfg.sh" ]; then
+  cp "$ROOT/native/build-afterdark-cfg.sh" "$STAGE/native/build-afterdark-cfg.sh"
+  chmod +x "$STAGE/native/build-afterdark-cfg.sh"
+fi
 if [ -f "$ROOT/Makefile" ]; then
   cp "$ROOT/Makefile" "$STAGE/Makefile"
 fi

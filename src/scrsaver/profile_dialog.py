@@ -118,9 +118,11 @@ class ImportScriptDialog(QDialog):
 
         hint = QLabel(
             "Winetricks packages are downloaded and installed into the prefix you pick. "
-            "Screensaver files are not in the script — matching items already in your "
-            "library receive the listed settings, and their .scr / companion files are "
-            "copied into that prefix. Game scripts apply recorded autoplay only."
+            "Screensaver files and After Dark discs are not in the script — matching "
+            "items already in your library receive the listed settings, and their .scr "
+            "/ companion files are copied into that prefix. If the script names a "
+            "Windows installer, you will be asked to run your own copy next. Game "
+            "scripts apply recorded autoplay only."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -186,6 +188,16 @@ class ImportScriptDialog(QDialog):
             self._library_changed()
         assert isinstance(result, profile.ApplyResult)
         QMessageBox.information(self, "Import compatibility script", _result_text(result))
+        name, runner = self._selected()
+        if result.installer.present():
+            offer_run_product_installer(
+                self.cfg,
+                self,
+                prefix_name=name,
+                runner_id=runner,
+                installer=result.installer,
+                library_changed=self._library_changed,
+            )
         self.accept()
 
     def _on_fail(self, message: str) -> None:
@@ -213,6 +225,12 @@ def _result_text(result: profile.ApplyResult) -> str:
             "Games not in your list yet (import the game first): "
             + ", ".join(result.games_missing)
         )
+    if result.installer.present():
+        lines.append("")
+        lines.append(
+            f"This recipe expects {result.installer.product or 'a Windows installer'} "
+            "from your own disc or setup.exe."
+        )
     if result.warnings:
         lines.append("")
         lines.extend(result.warnings)
@@ -227,10 +245,15 @@ def pick_and_import(
     default_runner: str = "",
     library_changed=None,
 ) -> bool:
+    from . import paths
+
+    start = paths.project_root() / "data" / "profiles"
+    if not start.is_dir():
+        start = Path.home()
     chosen, _filter = QFileDialog.getOpenFileName(
         parent,
         "Import compatibility script",
-        str(Path.home()),
+        str(start),
         profile.FILE_FILTER,
     )
     if not chosen:
@@ -251,9 +274,124 @@ def pick_and_import(
     return dialog.exec() == QDialog.DialogCode.Accepted
 
 
+def offer_run_product_installer(
+    cfg: AppConfig,
+    parent: QWidget | None,
+    *,
+    prefix_name: str,
+    runner_id: str,
+    installer: profile.InstallerHint,
+    library_changed=None,
+) -> None:
+    product = installer.product or "this Windows program"
+    names = ", ".join(installer.exe_names) if installer.exe_names else "SETUP.EXE"
+    extra = f"\n\n{installer.note}" if installer.note else ""
+    answer = QMessageBox.question(
+        parent,
+        "Run Windows installer",
+        f'This script prepares Wine for {product}.\n\n'
+        f"Use your own copy of the installer ({names}). "
+        f"The disc files are not included in the script.{extra}\n\n"
+        "Run the installer now?",
+    )
+    if answer != QMessageBox.StandardButton.Yes:
+        return
+    start = str(Path.home())
+    media = Path("/run/media") / Path.home().name
+    if media.is_dir():
+        start = str(media)
+    chosen, _filter = QFileDialog.getOpenFileName(
+        parent,
+        f"{product} installer",
+        start,
+        "Windows executables (*.exe *.EXE);;All files (*)",
+    )
+    if not chosen:
+        return
+    try:
+        if prefix_name:
+            session = wineutil.session_for_named_prefix(prefix_name, runner_id or SYSTEM_ID)
+        else:
+            session = wineutil.session_for(None)
+        wineutil.setup_prefix(session)
+        before = wineutil.list_prefix_screensavers(session.prefix)
+        wineutil.launch_windows_installer(session, Path(chosen))
+    except Exception as exc:
+        QMessageBox.warning(parent, "Windows installer", str(exc))
+        return
+    QMessageBox.information(
+        parent,
+        "Windows installer",
+        "Complete Typical Install in the 800x600 Wine window.\n\n"
+        "Skip bundled DirectX and online extras when the installer offers them. "
+        "Click OK here when setup has finished.",
+    )
+    after = wineutil.list_prefix_screensavers(session.prefix)
+    new_files = [item for item in after if item.resolve() not in {p.resolve() for p in before}]
+    if not new_files:
+        picked, _ = QFileDialog.getOpenFileName(
+            parent,
+            "Choose After Dark.scr (or another new .scr) from the prefix",
+            str(session.prefix / "drive_c"),
+            "Screensavers (*.scr *.SCR);;All files (*)",
+        )
+        if picked:
+            new_files = [Path(picked)]
+    if not new_files:
+        return
+    from .library import NotScreensaverError, import_scr_file
+    from .config import save_config
+    from .runners import runner_display
+
+    stored = wineutil.prefix_record_name(session.prefix)
+    imported = 0
+    errors: list[str] = []
+    for source in new_files:
+        try:
+            before = {item.id for item in cfg.screensavers}
+            import_scr_file(
+                cfg,
+                source,
+                wine_runner="" if (runner_id or SYSTEM_ID) == SYSTEM_ID else runner_id,
+                wine_prefix=stored,
+            )
+            imported += max(1, len([item for item in cfg.screensavers if item.id not in before]))
+        except FileExistsError as exc:
+            errors.append(str(exc))
+        except (OSError, NotScreensaverError) as exc:
+            errors.append(f"{source.name}: {exc}")
+    save_config(cfg)
+    if library_changed is not None:
+        library_changed()
+    message = f"Imported {imported} screensaver(s) into {stored} ({runner_display(runner_id or SYSTEM_ID)})."
+    if errors:
+        message += "\n\n" + "\n".join(errors)
+    QMessageBox.information(parent, "SCR Saver", message)
+
+
+def offer_export_after_installer(cfg: AppConfig, parent: QWidget | None, prefix_name: str) -> bool:
+    script = profile.export_prefix(cfg, prefix_name)
+    if not script.installer.present() and not script.screensavers and not script.wine.winetricks:
+        return False
+    answer = QMessageBox.question(
+        parent,
+        "Export compatibility script",
+        "Write a compatibility script for this install so someone else can "
+        "prepare a prefix and run their own copy of the installer?",
+    )
+    if answer != QMessageBox.StandardButton.Yes:
+        return False
+    return export_current_prefix(cfg, parent, prefix_name)
+
+
 def export_current_prefix(cfg: AppConfig, parent: QWidget | None, prefix_name: str) -> bool:
     script = profile.export_prefix(cfg, prefix_name)
-    if not script.screensavers and not script.games and not script.wine.winetricks:
+    if (
+        not script.screensavers
+        and not script.games
+        and not script.wine.winetricks
+        and not script.installer.present()
+    ):
         answer = QMessageBox.question(
             parent,
             "Export compatibility script",

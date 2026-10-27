@@ -50,6 +50,12 @@ chmod +x "$DEST/scrsaver" "$DEST/install.sh" "$DEST/package.sh" \
 if [[ -f "$DEST/native/unshield" ]]; then
   chmod +x "$DEST/native/unshield" || true
 fi
+if [[ -f "$DEST/native/afterdark_cfg.exe" ]]; then
+  chmod +x "$DEST/native/afterdark_cfg.exe" || true
+fi
+if [[ -f "$DEST/native/build-afterdark-cfg.sh" ]]; then
+  chmod +x "$DEST/native/build-afterdark-cfg.sh" || true
+fi
 
 echo
 echo "Synced live tree -> $DEST"

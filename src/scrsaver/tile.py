@@ -228,6 +228,92 @@ def _x11_caption(wid: str) -> str:
     return ""
 
 
+def place_windows_by_pid(
+    jobs: list[tuple[set[int], int, int, int, int, bool, bool]],
+) -> bool:
+    """Move Wayland windows by process id.
+
+    Each job is ``(pids, x, y, width, height, fullscreen, no_border)``.
+    Used for Chromium After Dark pages, which are native Wayland windows
+    and do not show up in wmctrl.
+    """
+    if not jobs:
+        return False
+    parts: list[str] = []
+    for pids, x, y, width, height, fullscreen, no_border in jobs:
+        pid_list = ",".join(str(int(pid)) for pid in pids if int(pid) > 0)
+        if not pid_list:
+            continue
+        parts.append(
+            "{{pids:[{pids}],x:{x},y:{y},w:{w},h:{h},fs:{fs},nb:{nb}}}".format(
+                pids=pid_list,
+                x=int(x),
+                y=int(y),
+                w=int(width),
+                h=int(height),
+                fs="true" if fullscreen else "false",
+                nb="true" if no_border else "false",
+            )
+        )
+    if not parts:
+        return False
+    script = f"""
+var jobs = [{",".join(parts)}];
+function screenFor(x, y) {{
+    var screens = workspace.screens;
+    if (!screens || !screens.length) return null;
+    for (var i = 0; i < screens.length; i++) {{
+        var g = screens[i].geometry;
+        if (x >= g.x && x < g.x + g.width && y >= g.y && y < g.y + g.height)
+            return screens[i];
+    }}
+    var best = screens[0];
+    var bestDist = 1e15;
+    for (var i = 0; i < screens.length; i++) {{
+        var g = screens[i].geometry;
+        var dx = (g.x + g.width / 2) - x;
+        var dy = (g.y + g.height / 2) - y;
+        var d = dx * dx + dy * dy;
+        if (d < bestDist) {{ bestDist = d; best = screens[i]; }}
+    }}
+    return best;
+}}
+try {{
+    var list = workspace.windowList();
+    for (var i = 0; i < list.length; i++) {{
+        var w = list[i];
+        var pid = 0;
+        try {{ pid = Number(w.pid); }} catch (e0) {{}}
+        for (var j = 0; j < jobs.length; j++) {{
+            var job = jobs[j];
+            if (job.pids.indexOf(pid) === -1) continue;
+            try {{ w.keepAbove = true; }} catch (e1) {{}}
+            try {{ w.skipTaskbar = true; }} catch (e2) {{}}
+            try {{ w.skipPager = true; }} catch (e3) {{}}
+            if (job.nb) {{
+                try {{ w.noBorder = true; }} catch (e4) {{}}
+            }}
+            var dest = screenFor(job.x + 8, job.y + 8);
+            if (dest && typeof workspace.sendClientToScreen === "function") {{
+                try {{ workspace.sendClientToScreen(w, dest); }} catch (e5) {{}}
+            }}
+            if (job.fs) {{
+                try {{ w.fullScreen = true; }} catch (e6) {{}}
+            }} else {{
+                try {{ w.fullScreen = false; }} catch (e7) {{}}
+                try {{
+                    var g = w.frameGeometry;
+                    g.x = job.x; g.y = job.y; g.width = job.w; g.height = job.h;
+                    w.frameGeometry = g;
+                }} catch (e8) {{}}
+            }}
+        }}
+    }}
+}} catch (e9) {{}}
+"""
+    return _run_kwin_script("scrsaver-htmlplace", script)
+
+
 def _kwin_noborder(caption: str) -> bool:
     want = caption.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
     script = f"""

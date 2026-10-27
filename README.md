@@ -16,6 +16,7 @@ This is a public alpha. Expect rough edges, especially around autoplay, Proton g
 - Audio duck or mute, optional mute while the frame cap is on, skip a screen that is showing fullscreen video
 - Tile the screensaver into empty space between windows, with optional hidden decorations and scaled content
 - Crash reports after a failure, with a prompt on the next start
+- After Dark 4 (and 3.x): each `.ad` module is listed; After Dark.scr is only the host
 - systemd user service so it can start with the graphical session
 
 SCR Saver uses its own Wine prefixes under `~/.local/share/scrsaver/`. It does not use `~/.wine`.
@@ -120,7 +121,9 @@ Right-click the tray icon for **Additional Settings**: audio, fullscreen-video s
 
 **Manage prefixes** can import a Windows EXE (Heroic games under `~/Games/Heroic` bring their Wine/Proton bottle) or an installed Steam game. After import you can record keys and mouse input; Escape finishes recording and is not replayed. A later dialog can loop the take and choose whether a real key, mouse move, or click stops playback.
 
-**Import script…** / **Export script…** share a JSON compatibility recipe for the highlighted prefix. Export lists Winetricks packages already in that bottle and the right-click settings of every screensaver that uses it (Wine/Proton, Windows version, interactive, notes, extras). Steam and prefix EXE games contribute only their autoplay keystrokes. Import asks which prefix to apply to (the highlighted bottle is the default, usually `~/.local/share/scrsaver/wineprefix/`), shows the full package list, downloads those Winetricks verbs into it, and copies settings onto matching library items. The Wine Prefix Wizard offers the same import after a new bottle is created. Scripts do not include `.scr` files or game EXEs — import those separately.
+**Import script…** / **Export script…** share a JSON compatibility recipe for the highlighted prefix. Export lists Winetricks packages already in that bottle and the right-click settings of every screensaver that uses it (Wine/Proton, Windows version, interactive, notes, extras). A script can also name a Windows product you install from your own disc (After Dark 4 is the example). Steam and prefix EXE games contribute only their autoplay keystrokes. Import asks which prefix to apply to (the highlighted bottle is the default, usually `~/.local/share/scrsaver/wineprefix/`), shows the full package list, downloads those Winetricks verbs into it, and copies settings onto matching library items. The Wine Prefix Wizard offers the same import after a new bottle is created. Scripts do not include `.scr` files, `.ad` modules, or game EXEs — import those separately, or run the installer the script asks for.
+
+After Dark 4: import `data/profiles/after-dark-4.scrsaver.json` into a prefix, then run **your** After Dark CD when asked (`ADESETUP.EXE` in the ADE folder). Typical Install; skip the disc’s DirectX and online extras. SCR Saver then lists every `.ad` module and uses After Dark.scr as the host. If After Dark is already installed in a bottle, updating SCR Saver and restarting the service lists those modules without running setup again. **Configure screensaver** opens After Dark’s own settings page.
 
 The default Wine prefix cannot be removed. Bottles created under `~/.local/share/scrsaver/` can be deleted; imported and Steam bottles are delisted only.
 
@@ -143,7 +146,7 @@ wine explorer /desktop=SCRSAVER-0,1920x1080 C:\scrsaver\FILE.SCR /s
 
 Each screen gets its own Wine virtual desktop, then the window is placed with `wmctrl` and made fullscreen. With tiling on, the virtual desktop is sized to the gap and placed there instead.
 
-Old Win32 / GDI savers are the expected case. Direct3D or .NET savers may need extra Wine components (`winetricks d3dx9`, Mono, and so on). Configure dialogs use `wine FILE.scr /c` when the saver implements `/c`.
+Old Win32 / GDI savers are the expected case. Direct3D or .NET savers may need extra Wine components (`winetricks d3dx9`, Mono, and so on). Configure dialogs use `wine FILE.scr /c` when the saver implements `/c`. After Dark modules open After Dark’s Display Page (`ADPage.dll`) instead, because Wine’s Display Settings has no After Dark tab.
 
 Installer `.exe` files (InstallShield, zip SFX, and similar) are unpacked and every `.scr` inside is added. Microsoft Plus! 98 titles such as Mystery and Inside Your Computer are launchers: they need `WL32DLL.DLL` and the theme data from a real Plus! 98 install. Drop those extra files next to the `.scr`.
 

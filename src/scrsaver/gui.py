@@ -156,6 +156,10 @@ class MainWindow(QMainWindow):
 
         self._build()
         self._build_tray()
+        from .afterdark import expand_all
+
+        if expand_all(self.cfg):
+            save_config(self.cfg)
         self._reload_list()
         self._sync_controls()
 
@@ -317,11 +321,20 @@ class MainWindow(QMainWindow):
                 extra.append(f"app {entry.steam_appid}")
             elif entry.is_prefix_exe():
                 extra.append(entry.filename)
+            elif entry.is_afterdark():
+                if entry.arch:
+                    extra.append(entry.arch)
+                extra.append(entry.ad_folder or "After Dark")
             else:
                 if entry.arch:
                     extra.append(entry.arch)
                 extra.append(entry.filename)
-            if entry.notes and not entry.is_steam() and not entry.is_prefix_exe():
+            if (
+                entry.notes
+                and not entry.is_steam()
+                and not entry.is_prefix_exe()
+                and not entry.is_afterdark()
+            ):
                 extra.append("needs extra files")
             if entry.keystrokes:
                 extra.append("looping autoplay" if entry.keystroke_loop else "autoplay")
@@ -332,8 +345,20 @@ class MainWindow(QMainWindow):
             prefix_label = entry.wine_prefix or "wineprefix (default)"
             tooltip = f"Wine prefix: {prefix_label}"
             tooltip += f"\nWine/Proton: {runner_display(entry.wine_runner)}"
+            try:
+                from .htmlplay import is_html_wrapper
+
+                if entry.linux_path().is_file() and is_html_wrapper(entry.linux_path()):
+                    tooltip += "\nHTML After Dark (plays in Chromium, no Wine)"
+            except Exception:
+                pass
             if entry.is_steam():
                 tooltip += f"\nSteam app {entry.steam_appid}"
+            elif entry.is_afterdark():
+                tooltip += (
+                    f"\nAfter Dark module: {entry.ad_folder}\\{entry.ad_module}.ad"
+                    "\nPlayed through After Dark.scr"
+                )
             elif entry.exe_path:
                 tooltip += f"\n{entry.exe_path}"
             else:
@@ -601,7 +626,12 @@ class MainWindow(QMainWindow):
         if uninstaller is not None:
             others = others_sharing_prefix(self.cfg, entry)
             extra = ""
-            if others:
+            if others and entry.is_afterdark() and all(item.is_afterdark() for item in others):
+                extra = (
+                    f"\n\nThe same After Dark install is also used by {len(others)} other "
+                    "module(s). Uninstalling the Windows program removes those as well."
+                )
+            elif others:
                 names = ", ".join(item.name for item in others)
                 extra = (
                     f"\n\nThe same Wine install is also used by: {names}. "
