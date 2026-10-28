@@ -13,6 +13,7 @@ from . import paths
 log = logging.getLogger(__name__)
 
 PlayMode = Literal["random", "selected"]
+RotateMode = Literal["random", "list"]
 
 
 LAUNCH_LIBRARY = ""
@@ -102,6 +103,9 @@ class AppConfig:
     tile_hide_decorations: bool = False
     tile_scale_content: bool = False
     fps_limit: int = 0
+    rotate_savers: bool = False
+    rotate_seconds: int = 60
+    rotate_mode: RotateMode = "random"
     managed_prefixes: list[ManagedPrefix] = field(default_factory=list)
     screensavers: list[ScreensaverEntry] = field(default_factory=list)
 
@@ -127,6 +131,25 @@ class AppConfig:
         import random
 
         return random.choice(enabled)
+
+    def pick_next_playable(self, current_id: str, mode: str = "") -> ScreensaverEntry | None:
+        enabled = self.enabled_entries()
+        if not enabled:
+            return None
+        if len(enabled) == 1:
+            return enabled[0]
+        order = mode or self.rotate_mode
+        if order == "list":
+            ids = [item.id for item in enabled]
+            try:
+                index = ids.index(current_id)
+            except ValueError:
+                index = -1
+            return enabled[(index + 1) % len(enabled)]
+        import random
+
+        others = [item for item in enabled if item.id != current_id]
+        return random.choice(others) if others else enabled[0]
 
 
 def _coerce_cpu_percent(value: Any) -> float:
@@ -203,6 +226,9 @@ def load_config() -> AppConfig:
     play_mode = raw.get("play_mode", "random")
     if play_mode not in ("random", "selected"):
         play_mode = "random"
+    rotate_mode = raw.get("rotate_mode", "random")
+    if rotate_mode not in ("random", "list"):
+        rotate_mode = "random"
     display_mode = str(raw.get("display_mode") or "all")
     if display_mode not in ("all", "primary") and not display_mode.startswith("output:"):
         display_mode = "all"
@@ -281,6 +307,9 @@ def load_config() -> AppConfig:
         tile_hide_decorations=bool(raw.get("tile_hide_decorations", False)),
         tile_scale_content=bool(raw.get("tile_scale_content", False)),
         fps_limit=_coerce_int(raw.get("fps_limit"), 0, 0, 120),
+        rotate_savers=bool(raw.get("rotate_savers", False)),
+        rotate_seconds=_coerce_int(raw.get("rotate_seconds"), 60, 60, 180 * 60),
+        rotate_mode=rotate_mode,
         managed_prefixes=managed,
         screensavers=entries,
     )

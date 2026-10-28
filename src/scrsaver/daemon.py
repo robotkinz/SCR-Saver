@@ -26,6 +26,10 @@ class SaverController(QObject):
         self.player = Player(self)
         self._inhibit = IdleInhibit()
         self._manual_play = False
+        self._rotating = False
+        self._rotate_timer = QTimer(self)
+        self._rotate_timer.setSingleShot(True)
+        self._rotate_timer.timeout.connect(self._on_rotate)
         self.idle.set_timeout(cfg.timeout_seconds)
         self.idle.idle.connect(self._on_idle)
         self.idle.active.connect(self._on_active)
@@ -51,6 +55,10 @@ class SaverController(QObject):
         save_config(self.cfg)
         if not self.cfg.enabled and self.player.is_playing() and not self._manual_play:
             self.player.stop()
+        if self.player.is_playing() and self.cfg.rotate_savers:
+            self._arm_rotate()
+        else:
+            self._rotate_timer.stop()
         self.state_changed.emit()
 
     def play_entry(self, sid: str | None = None, manual: bool = True) -> None:
@@ -95,11 +103,15 @@ class SaverController(QObject):
         )
 
     def stop_playback(self) -> None:
+        self._rotate_timer.stop()
+        self._rotating = False
         self._manual_play = False
         self.player.stop()
         self.idle.bump()
 
     def shutdown(self) -> None:
+        self._rotate_timer.stop()
+        self._rotating = False
         self.idle.stop()
         self.player.stop()
         self._inhibit.release()
@@ -136,19 +148,52 @@ class SaverController(QObject):
         self._inhibit.acquire()
         self._tick_audio()
         self._audio_timer.start()
+        self._arm_rotate()
         self.state_changed.emit()
 
     def _on_stopped(self) -> None:
         self._audio_timer.stop()
+        if self._rotating:
+            self.state_changed.emit()
+            return
+        self._rotate_timer.stop()
         self._inhibit.release()
         self._manual_play = False
         self.idle.bump()
         self.state_changed.emit()
 
+    def _arm_rotate(self) -> None:
+        self._rotate_timer.stop()
+        if not self.cfg.rotate_savers or not self.player.is_playing():
+            return
+        seconds = max(60, int(self.cfg.rotate_seconds or 60))
+        self._rotate_timer.start(seconds * 1000)
+        log.info("Next screensaver in %s minute(s)", max(1, round(seconds / 60)))
+
+    def _on_rotate(self) -> None:
+        if not self.cfg.rotate_savers or not self.player.is_playing():
+            return
+        current = self.player.playing_id()
+        nxt = self.cfg.pick_next_playable(current, self.cfg.rotate_mode)
+        if nxt is None or nxt.id == current:
+            self._arm_rotate()
+            return
+        log.info("Switching screensaver to %s", nxt.name)
+        manual = self._manual_play
+        self._rotating = True
+        self.player.stop()
+        self._rotating = False
+        self.play_entry(sid=nxt.id, manual=manual)
+        if not self.player.is_playing():
+            self._inhibit.release()
+            self.idle.bump()
+
     def _tick_audio(self) -> None:
         if not self.player.is_playing():
             return
-        pids = set(wineutil.list_prefix_pids(self.player.wine_session()))
+        pids: set[int] = set()
+        for session in self.player.wine_sessions():
+            pids.update(wineutil.list_prefix_pids(session))
         apply_screensaver_audio(
             mute=self.cfg.mute_screensaver_audio or int(self.cfg.fps_limit or 0) > 0,
             duck_percent=self.cfg.duck_percent,
@@ -157,6 +202,8 @@ class SaverController(QObject):
         )
 
     def _on_failed(self, message: str) -> None:
+        self._rotate_timer.stop()
+        self._rotating = False
         self._inhibit.release()
         self._manual_play = False
         self.error.emit(message)

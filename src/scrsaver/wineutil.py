@@ -25,6 +25,7 @@ _PREFIX_LOCK = threading.Lock()
 class WineSession:
     runner: WineRunner
     prefix: Path
+    origin_prefix: Path | None = None
 
     @property
     def wine(self) -> str:
@@ -104,7 +105,7 @@ def available_prefixes(cfg) -> list[tuple[str, str, str]]:
         for path in children:
             if not path.is_dir() or not (path / "system.reg").is_file():
                 continue
-            if path.name.lower() in seen or path.name.lower() in paths.RESERVED_PREFIX_NAMES:
+            if path.name.startswith(".") or path.name.lower() in seen or path.name.lower() in paths.RESERVED_PREFIX_NAMES:
                 continue
             seen.add(path.name.lower())
             choices.append((path.name, path.name, SYSTEM_ID))
@@ -171,7 +172,7 @@ def cpu_policy_for(session: WineSession) -> tuple[float, bool]:
         cfg = load_config()
     except Exception:
         return 100, False
-    key = prefix_record_name(session.prefix)
+    key = prefix_record_name(session.origin_prefix or session.prefix)
     for item in getattr(cfg, "managed_prefixes", []) or []:
         if item.name == key or (key == "wineprefix" and item.name in ("", "wineprefix")):
             from .cpu_limit import clamp_quota_percent
@@ -187,7 +188,7 @@ def dpi_for(session: WineSession) -> int:
         cfg = load_config()
     except Exception:
         return 0
-    key = prefix_record_name(session.prefix)
+    key = prefix_record_name(session.origin_prefix or session.prefix)
     for item in getattr(cfg, "managed_prefixes", []) or []:
         if item.name == key or (key == "wineprefix" and item.name in ("", "wineprefix")):
             try:
@@ -1080,6 +1081,84 @@ def set_dll_overrides(session: WineSession, overrides: dict[str, str]) -> None:
             stderr=subprocess.DEVNULL,
             timeout=30,
         )
+
+
+CLONE_DIR_NAME = ".display-clones"
+_CLONE_FILES = ("system.reg", "user.reg", "userdef.reg", ".update-timestamp")
+
+
+def display_clone_root() -> Path:
+    path = paths.data_dir() / CLONE_DIR_NAME
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def display_clone_path(source: Path, index: int) -> Path:
+    name = paths.sanitize_prefix_name(source.name) or "wineprefix"
+    return display_clone_root() / f"{name}__d{index}"
+
+
+def _force_symlink(path: Path, target: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+    path.symlink_to(target)
+
+
+def clone_session_for_display(source: WineSession, index: int) -> WineSession:
+    """Copy registry, share drive_c, so a second After Dark instance has its own wineserver.
+
+    After Dark.scr takes a process mutex inside one prefix. A second /s in the same
+    bottle leaves an empty white virtual desktop. Each extra display gets a cheap
+    clone with its own mutex and a single virtual monitor.
+    """
+    if index <= 0:
+        return source
+    src = source.prefix
+    dest = display_clone_path(src, index)
+    origin = source.origin_prefix or src
+    clone = WineSession(runner=source.runner, prefix=dest, origin_prefix=origin)
+    if dest.exists():
+        kill_prefix(clone)
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in _CLONE_FILES:
+        src_file = src / name
+        if src_file.is_file():
+            shutil.copy2(src_file, dest / name)
+    drive_c = src / "drive_c"
+    if drive_c.exists():
+        _force_symlink(dest / "drive_c", drive_c.resolve())
+    dosdevices = src / "dosdevices"
+    if dosdevices.exists():
+        _force_symlink(dest / "dosdevices", dosdevices.resolve())
+    log.info("After Dark display clone %s -> %s", src, dest)
+    return clone
+
+
+def list_display_clone_sessions(source: WineSession) -> list[WineSession]:
+    root = paths.data_dir() / CLONE_DIR_NAME
+    if not root.is_dir():
+        return []
+    name = paths.sanitize_prefix_name(source.prefix.name) or "wineprefix"
+    marker = f"{name}__d"
+    origin = source.origin_prefix or source.prefix
+    found: list[WineSession] = []
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return []
+    for child in children:
+        if child.is_dir() and child.name.startswith(marker):
+            found.append(WineSession(runner=source.runner, prefix=child, origin_prefix=origin))
+    return found
+
+
+def kill_display_clones(source: WineSession | None) -> None:
+    if source is None:
+        return
+    for clone in list_display_clone_sessions(source):
+        kill_prefix(clone)
 
 
 def list_prefix_pids(session: WineSession | None = None) -> list[int]:

@@ -55,9 +55,11 @@ class Player(QObject):
         self._place_tries = 0
         self._targets: list[ScreenTarget] = []
         self._playing_name = ""
+        self._playing_id = ""
         self._started_at = 0.0
         self._session_active = False
         self._wine_session = None
+        self._wine_sessions: list = []
         self._interactive = False
         self._muted_leaders: set[int] = set()
         self._steam_appid = ""
@@ -80,6 +82,9 @@ class Player(QObject):
     def playing_name(self) -> str:
         return self._playing_name if self.is_playing() else ""
 
+    def playing_id(self) -> str:
+        return self._playing_id if self.is_playing() else ""
+
     def grace_active(self) -> bool:
         return self.is_playing() and (time.monotonic() - self._started_at) < GRACE_SECONDS
 
@@ -95,6 +100,14 @@ class Player(QObject):
 
     def wine_session(self):
         return self._wine_session
+
+    def wine_sessions(self) -> list:
+        sessions = list(self._wine_sessions)
+        if self._wine_session is not None and all(
+            getattr(item, "prefix", None) != self._wine_session.prefix for item in sessions
+        ):
+            sessions.insert(0, self._wine_session)
+        return sessions
 
     def muted_audio_pids(self) -> set[int]:
         if not self._muted_leaders:
@@ -160,6 +173,7 @@ class Player(QObject):
             self.stop()
         else:
             wineutil.kill_prefix(session)
+            wineutil.kill_display_clones(session)
         self._ensure_emulator(entry)
         if kind == LAUNCH_PREFIX_EXE or entry.is_prefix_exe():
             self._play_prefix_exe(entry, session, targets, audio_source)
@@ -183,11 +197,13 @@ class Player(QObject):
         except OSError as exc:
             self.failed.emit(f"Could not stage screensaver for Wine: {exc}")
             return
-        if getattr(entry, "ad_module", ""):
-            from .afterdark import select_module
+        ad_module = getattr(entry, "ad_module", "") or ""
+        select_ad = None
+        if ad_module:
+            from .afterdark import select_module as select_ad
 
             try:
-                select_module(session, entry.ad_folder, entry.ad_module)
+                select_ad(session, entry.ad_folder, entry.ad_module)
             except Exception as exc:
                 self.failed.emit(f"Could not select After Dark module {entry.ad_module}: {exc}")
                 return
@@ -195,15 +211,27 @@ class Player(QObject):
         env = wineutil.wine_env(session)
         procs: list[subprocess.Popen[bytes]] = []
         muted_leaders: list[int] = []
+        sessions_used = [session]
         audio_target = _resolve_audio_target(targets, audio_source) if audio_source and len(targets) > 1 else None
         if audio_target is not None:
             targets = [audio_target] + [target for target in targets if target is not audio_target]
+        isolate = bool(ad_module) and len(targets) > 1
         try:
             from .audio import ensure_silent_sink
 
             silent_sink = ""
-            for target in targets:
+            for index, target in enumerate(targets):
+                instance_session = session
                 instance_env = dict(env)
+                if isolate and index > 0:
+                    instance_session = wineutil.clone_session_for_display(session, index)
+                    sessions_used.append(instance_session)
+                    instance_env = wineutil.wine_env(instance_session)
+                    if select_ad is not None:
+                        try:
+                            select_ad(instance_session, entry.ad_folder, entry.ad_module)
+                        except Exception as exc:
+                            log.warning("After Dark clone could not select %s: %s", ad_module, exc)
                 muted = audio_target is not None and target is not audio_target
                 if muted:
                     if not silent_sink:
@@ -215,7 +243,7 @@ class Player(QObject):
                         f"{overrides};{silent_dlls}" if overrides else silent_dlls
                     )
                 desk_w, desk_h = _desktop_size(target)
-                play_path = wineutil.screentime_play_path(entry, session) or wine_path
+                play_path = wineutil.screentime_play_path(entry, instance_session) or wine_path
                 cmd = [
                     wine,
                     "explorer",
@@ -228,22 +256,25 @@ class Player(QObject):
                     cmd.append("/s")
                 cmd = _wrap_gamescope(cmd, target, instance_env)
                 log.info("Launching %s%s", " ".join(cmd), " (audio muted)" if muted else "")
-                proc = wineutil.popen_wine(session, cmd, env=instance_env)
+                proc = wineutil.popen_wine(instance_session, cmd, env=instance_env)
                 procs.append(proc)
                 if muted:
                     muted_leaders.append(proc.pid)
         except OSError as exc:
             for proc in procs:
                 _terminate_group(proc)
+            wineutil.kill_display_clones(session)
             self.failed.emit(f"Could not start Wine: {exc}")
             return
 
         self._procs = procs
         self._targets = targets
         self._playing_name = entry.name
+        self._playing_id = entry.id
         self._started_at = time.monotonic()
         self._session_active = True
         self._wine_session = session
+        self._wine_sessions = sessions_used
         self._interactive = bool(getattr(entry, "interactive", False))
         self._muted_leaders = set(muted_leaders)
         self._place_tries = 0
@@ -297,9 +328,11 @@ class Player(QObject):
         self._procs = procs
         self._targets = targets
         self._playing_name = entry.name
+        self._playing_id = entry.id
         self._started_at = time.monotonic()
         self._session_active = True
         self._wine_session = None
+        self._wine_sessions = []
         self._interactive = bool(getattr(entry, "interactive", False))
         self._muted_leaders = set()
         self._place_tries = 0
@@ -333,9 +366,11 @@ class Player(QObject):
         self._procs = []
         self._targets = []
         self._playing_name = entry.name
+        self._playing_id = entry.id
         self._started_at = time.monotonic()
         self._session_active = True
         self._wine_session = session
+        self._wine_sessions = [session] if session is not None else []
         self._interactive = bool(getattr(entry, "interactive", True))
         self._muted_leaders = set()
         self._steam_appid = appid
@@ -406,9 +441,11 @@ class Player(QObject):
         self._procs = procs
         self._targets = targets[:1]
         self._playing_name = entry.name
+        self._playing_id = entry.id
         self._started_at = time.monotonic()
         self._session_active = True
         self._wine_session = session
+        self._wine_sessions = [session]
         self._interactive = bool(getattr(entry, "interactive", False))
         self._muted_leaders = set(muted_leaders)
         self._place_tries = 0
@@ -533,15 +570,23 @@ class Player(QObject):
         self._procs = []
         self._targets = []
         self._playing_name = ""
+        self._playing_id = ""
         self._session_active = False
         self._interactive = False
         self._muted_leaders = set()
         if self._steam_appid:
             prefix = self._wine_session.prefix if self._wine_session is not None else None
             steam.stop_app(self._steam_appid, prefix)
-        elif self._wine_session is not None:
-            wineutil.kill_prefix(self._wine_session)
+        else:
+            seen: set[str] = set()
+            for sess in self.wine_sessions():
+                key = str(getattr(sess, "prefix", "") or "")
+                if key in seen:
+                    continue
+                seen.add(key)
+                wineutil.kill_prefix(sess)
         self._wine_session = None
+        self._wine_sessions = []
         self._steam_appid = ""
         self._steam_seen = False
         if was_playing:
@@ -562,7 +607,7 @@ class Player(QObject):
             self.stop()
             return
         wrappers_alive = any(_alive(proc) for proc in self._procs)
-        prefix_alive = bool(self._wine_session and wineutil.list_prefix_pids(self._wine_session))
+        prefix_alive = any(wineutil.list_prefix_pids(sess) for sess in self.wine_sessions())
         if wrappers_alive or prefix_alive:
             return
         log.info("Wine screensaver process exited")

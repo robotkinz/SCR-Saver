@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -105,6 +106,27 @@ class AdditionalSettingsDialog(QDialog):
         self.skip_fs = QCheckBox("Do not run a screensaver on a display that has fullscreen video")
         self.skip_fs.toggled.connect(self._save)
         video_form.addRow(self.skip_fs)
+        self.rotate_box = QCheckBox("Switch to another screensaver after a set time")
+        self.rotate_box.toggled.connect(self._on_rotate_toggled)
+        video_form.addRow(self.rotate_box)
+        self.rotate_spin = QSpinBox()
+        self.rotate_spin.setRange(1, 180)
+        self.rotate_spin.setSuffix(" minutes")
+        self.rotate_spin.valueChanged.connect(self._save)
+        rotate_spin_wrap = QWidget()
+        rotate_spin_row = QHBoxLayout(rotate_spin_wrap)
+        rotate_spin_row.setContentsMargins(24, 0, 0, 0)
+        rotate_spin_row.addWidget(self.rotate_spin)
+        video_form.addRow("After", rotate_spin_wrap)
+        self.rotate_combo = QComboBox()
+        self.rotate_combo.addItem("Randomly", "random")
+        self.rotate_combo.addItem("Down the list", "list")
+        self.rotate_combo.currentIndexChanged.connect(self._save)
+        rotate_combo_wrap = QWidget()
+        rotate_combo_row = QHBoxLayout(rotate_combo_wrap)
+        rotate_combo_row.setContentsMargins(24, 0, 0, 0)
+        rotate_combo_row.addWidget(self.rotate_combo)
+        video_form.addRow("Then play", rotate_combo_wrap)
         self.tile_box = QCheckBox("Tile the screensaver into empty space instead of filling the screen")
         self.tile_box.toggled.connect(self._on_tile_toggled)
         video_form.addRow(self.tile_box)
@@ -285,6 +307,9 @@ class AdditionalSettingsDialog(QDialog):
         self.mute_box.blockSignals(True)
         self.duck_slider.blockSignals(True)
         self.skip_fs.blockSignals(True)
+        self.rotate_box.blockSignals(True)
+        self.rotate_spin.blockSignals(True)
+        self.rotate_combo.blockSignals(True)
         self.tile_box.blockSignals(True)
         self.tile_deco_box.blockSignals(True)
         self.tile_scale_box.blockSignals(True)
@@ -296,6 +321,10 @@ class AdditionalSettingsDialog(QDialog):
         self.one_audio_box.setChecked(self.cfg.one_audio_source)
         self._fill_audio_sources()
         self.skip_fs.setChecked(self.cfg.skip_fullscreen_video)
+        self.rotate_box.setChecked(self.cfg.rotate_savers)
+        self.rotate_spin.setValue(max(1, round(int(self.cfg.rotate_seconds or 60) / 60)))
+        rot_idx = self.rotate_combo.findData(self.cfg.rotate_mode or "random")
+        self.rotate_combo.setCurrentIndex(max(0, rot_idx))
         self.tile_box.setChecked(self.cfg.tile_into_free_space)
         self.tile_deco_box.setChecked(self.cfg.tile_hide_decorations)
         self.tile_scale_box.setChecked(self.cfg.tile_scale_content)
@@ -305,6 +334,9 @@ class AdditionalSettingsDialog(QDialog):
         self.mute_box.blockSignals(False)
         self.duck_slider.blockSignals(False)
         self.skip_fs.blockSignals(False)
+        self.rotate_box.blockSignals(False)
+        self.rotate_spin.blockSignals(False)
+        self.rotate_combo.blockSignals(False)
         self.tile_box.blockSignals(False)
         self.tile_deco_box.blockSignals(False)
         self.tile_scale_box.blockSignals(False)
@@ -314,6 +346,7 @@ class AdditionalSettingsDialog(QDialog):
         self._on_duck_changed(self.duck_slider.value())
         self._refresh_one_audio_widgets()
         self._refresh_tile_widgets()
+        self._refresh_rotate_widgets()
         self._loading = False
 
     def _on_duck_changed(self, value: int) -> None:
@@ -336,6 +369,9 @@ class AdditionalSettingsDialog(QDialog):
         self.cfg.one_audio_source = self.one_audio_box.isChecked()
         self.cfg.audio_source_display = str(self.audio_source_combo.currentData() or "primary")
         self.cfg.skip_fullscreen_video = self.skip_fs.isChecked()
+        self.cfg.rotate_savers = self.rotate_box.isChecked()
+        self.cfg.rotate_seconds = max(60, int(self.rotate_spin.value()) * 60)
+        self.cfg.rotate_mode = str(self.rotate_combo.currentData() or "random")
         self.cfg.tile_into_free_space = self.tile_box.isChecked()
         self.cfg.tile_hide_decorations = self.tile_deco_box.isChecked()
         self.cfg.tile_scale_content = self.tile_scale_box.isChecked()
@@ -348,6 +384,16 @@ class AdditionalSettingsDialog(QDialog):
         self._refresh_tile_widgets()
         if not self._loading:
             self._save()
+
+    def _on_rotate_toggled(self, _checked: bool = False) -> None:
+        self._refresh_rotate_widgets()
+        if not self._loading:
+            self._save()
+
+    def _refresh_rotate_widgets(self) -> None:
+        on = self.rotate_box.isChecked()
+        self.rotate_spin.setEnabled(on)
+        self.rotate_combo.setEnabled(on)
 
     def _refresh_tile_widgets(self) -> None:
         on = self.tile_box.isChecked()

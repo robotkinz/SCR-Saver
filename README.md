@@ -9,6 +9,7 @@ This is a public alpha. Expect rough edges, especially around autoplay, Proton g
 - Import `.scr` files, installer `.exe` files, zip archives, and folders
 - Play on idle (evdev, so it works on Wayland) or with **Test**
 - Pick a display, or play on all of them
+- Optionally switch to another checkmarked screensaver after a set time
 - Wine and Proton runners: system Wine, Steam Proton, Proton-GE, Lutris, Heroic, Bottles, PlayOnLinux
 - Extra Wine prefixes with CPU slowdown and a global frame cap
 - Import a Windows program by EXE (Heroic layouts included) or an installed Steam game
@@ -16,7 +17,7 @@ This is a public alpha. Expect rough edges, especially around autoplay, Proton g
 - Audio duck or mute, optional mute while the frame cap is on, skip a screen that is showing fullscreen video
 - Tile the screensaver into empty space between windows, with optional hidden decorations and scaled content
 - Crash reports after a failure, with a prompt on the next start
-- After Dark 4 (and 3.x): each `.ad` module is listed; After Dark.scr is only the host
+- After Dark 4 (and 3.x): each `.ad` module is listed; After Dark.scr is only the host; modules play on every display
 - systemd user service so it can start with the graphical session
 
 SCR Saver uses its own Wine prefixes under `~/.local/share/scrsaver/`. It does not use `~/.wine`.

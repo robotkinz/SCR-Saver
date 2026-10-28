@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.9-alpha — 2026-10-28
+
+- After Dark savers play on every display; the second screen is no longer a white void
+- Optional switch to another checkmarked screensaver after a set time (randomly, or down the list)
+
 ## 0.1.8-alpha — 2026-10-26
 
 - After Dark 4 (and 3.x) `.ad` modules show up as their own screensavers; After Dark.scr is only the host
