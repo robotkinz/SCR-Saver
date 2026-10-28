@@ -1452,6 +1452,6 @@
       "adesetup.exe",
       "setup.exe"
     ],
-    "note": "Run Typical Install from your After Dark CD. Prefer ADESETUP.EXE in the ADE folder (32-bit); SETUP.EXE at the disc root is 16-bit. SCR Saver copies the ADE folder into the prefix and opens the wizard on an 800x600 Wine desktop so the 256-color installer is visible. Skip the disc's DirectX, After Dark Online, and AT&T WorldNet. Import After Dark.scr as the screensaver; the .ad modules stay under C:\\After Dark and are loaded by that host. After Dark 3.x uses the same engine-plus-modules layout."
+    "note": "Run Typical Install from your After Dark CD. Prefer ADESETUP.EXE in the ADE folder (32-bit); SETUP.EXE at the disc root is 16-bit. SCR Saver copies the ADE folder into the prefix and opens the wizard on an 800x600 Wine desktop so the 256-color installer is visible. Skip the disc's DirectX, After Dark Online, and AT&T WorldNet. Import After Dark.scr as the screensaver; the .ad modules stay under C:\\After Dark and are loaded by that host. After Dark 3.x uses the same engine-plus-modules layout. 16-bit Deluxe Classics need a separate 32-bit prefix; use data/profiles/after-dark-deluxe-classics.scrsaver.json for those."
   }
 }

@@ -301,8 +301,11 @@ class PrefixManagerDialog(QDialog):
             if len(users) > 4:
                 used += ", …"
         self.title.setText("Default bottle" if self._is_default() else name)
+        arch = rec.wine_arch or wineutil.prefix_arch(path) or "win64"
+        arch_label = "32-bit" if arch == "win32" else "64-bit"
         self.detail.setText(
-            f"{path}\nWine/Proton: {runner_display(rec.runner_id or self._current_runner())}\n{used}"
+            f"{path}\nWine/Proton: {runner_display(rec.runner_id or self._current_runner())}"
+            f"  ·  {arch_label}\n{used}"
         )
         percent = float(rec.cpu_percent)
         win31 = win31_quota_percent()

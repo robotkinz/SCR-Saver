@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import paths
 from .config import AppConfig, ScreensaverEntry
 from .pe import MACHINE_AMD64, MACHINE_I386, arch_name
 
@@ -114,6 +115,34 @@ def list_modules(prefix: Path) -> list[AdModule]:
     return found
 
 
+WIN16_FOLDERS = {"deluxe classics"}
+WIN16_ENGINE_FILES = (
+    "OldMod16.dll",
+    "OldMod32.dll",
+    "AD_Snd.dll",
+    "ADPage.dll",
+    "ADPage.hlp",
+    "adxpl300.dll",
+    "ad30rsdb.dll",
+    "stoikdth.dll",
+    "adtool.dll",
+    "mesg_ad3.dat",
+    "Nonsense.txt",
+    "bitmaps.adc",
+    "djpg.dll",
+    "dtarga.dll",
+    "readbmp.dll",
+    "readfile.dll",
+    "readgif.dll",
+    "readmmp.dll",
+    "readpcx.dll",
+    "modules.ini",
+    "After Dark.exe",
+    "After Dark.ani",
+)
+WIN16_ENGINE_DIRS = ("Bitmaps", "Music", "Pictures")
+
+
 def expand_prefix(cfg: AppConfig, prefix_name: str) -> list[ScreensaverEntry]:
     """Replace After Dark.scr in the list with one row per .ad module in that prefix."""
     from . import wineutil
@@ -123,6 +152,11 @@ def expand_prefix(cfg: AppConfig, prefix_name: str) -> list[ScreensaverEntry]:
     modules = list_modules(folder)
     if not modules:
         return []
+    bottle_arch = wineutil.prefix_arch(folder)
+    if bottle_arch == "win64":
+        modules = [item for item in modules if item.arch != "win16"]
+        if not modules:
+            return []
     host = _host_entry(cfg, key)
     if host is None:
         host_path = find_host_scr(folder)
@@ -138,9 +172,16 @@ def expand_prefix(cfg: AppConfig, prefix_name: str) -> list[ScreensaverEntry]:
     }
     created: list[ScreensaverEntry] = []
     insert_at = cfg.screensavers.index(host) if host in cfg.screensavers else len(cfg.screensavers)
+    owned = "" if key in ("", "wineprefix") else key
     for module in modules:
         ident = (module.folder.lower(), module.module.lower())
         if ident in existing:
+            continue
+        moved = _rehome_module(cfg, module, owned, bottle_arch)
+        if moved is not None:
+            existing.add(ident)
+            if bottle_arch == "win32" and module.arch == "win16":
+                created.append(moved)
             continue
         entry = ScreensaverEntry(
             id=str(uuid.uuid4()),
@@ -256,6 +297,175 @@ def _module_arch(path: Path) -> str:
             return "x64"
         return arch_name(machine)
     return ""
+
+
+def _rehome_module(cfg: AppConfig, module: AdModule, prefix_name: str, bottle_arch: str) -> ScreensaverEntry | None:
+    """Point an already-listed .ad at this prefix instead of duplicating it."""
+    folder = module.folder.lower()
+    name = module.module.lower()
+    for item in cfg.screensavers:
+        if item.ad_folder.lower() != folder or item.ad_module.lower() != name:
+            continue
+        if bottle_arch == "win32" and module.arch == "win16":
+            item.wine_prefix = prefix_name
+            item.arch = module.arch or item.arch
+            log.info("Moved %s to 32-bit prefix %s", item.name, prefix_name or "wineprefix")
+            return item
+        return item
+    return None
+
+
+def find_win16_source(cfg: AppConfig, exclude: Path | None = None) -> Path | None:
+    """A Wine prefix that already has Deluxe Classics .ad files."""
+    from . import wineutil
+
+    skip = None
+    if exclude is not None:
+        try:
+            skip = exclude.expanduser().resolve()
+        except OSError:
+            skip = exclude
+    candidates: list[Path] = []
+    for rec in cfg.managed_prefixes:
+        if rec.name:
+            candidates.append(wineutil.prefix_path_for_name(rec.name, cfg))
+    candidates.append(paths.wineprefix_dir())
+    data = paths.data_dir()
+    if data.is_dir():
+        try:
+            candidates.extend(path for path in data.iterdir() if path.is_dir())
+        except OSError:
+            pass
+    seen: set[str] = set()
+    for prefix in candidates:
+        try:
+            resolved = prefix.expanduser().resolve()
+        except OSError:
+            resolved = prefix
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        if skip is not None and resolved == skip:
+            continue
+        root = find_root(prefix)
+        if root is None:
+            continue
+        classic = root / "Deluxe Classics"
+        if not classic.is_dir():
+            continue
+        try:
+            if any(classic.glob("*.ad")):
+                return prefix
+        except OSError:
+            continue
+    return None
+
+
+def copy_win16_into_prefix(source_prefix: Path, dest_prefix: Path) -> int:
+    """Copy 16-bit After Dark engine + Deluxe Classics into a 32-bit bottle."""
+    src_root = find_root(source_prefix)
+    if src_root is None:
+        return 0
+    dest_root = Path(dest_prefix) / "drive_c" / "After Dark"
+    dest_root.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for name in WIN16_ENGINE_FILES:
+        src = _file_ci(src_root, name)
+        if src is None:
+            continue
+        dest = dest_root / src.name
+        shutil.copy2(src, dest)
+        copied += 1
+    rsrc = Path(source_prefix) / "drive_c" / "windows" / "Ad_rsrc.dll"
+    if rsrc.is_file():
+        shutil.copy2(rsrc, dest_root / "Ad_rsrc.dll")
+        windows = Path(dest_prefix) / "drive_c" / "windows"
+        windows.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(rsrc, windows / "Ad_rsrc.dll")
+        copied += 1
+    for name in WIN16_ENGINE_DIRS:
+        src_dir = _dir_ci(src_root, name)
+        if src_dir is None:
+            continue
+        dest_dir = dest_root / src_dir.name
+        if dest_dir.exists():
+            shutil.rmtree(dest_dir)
+        shutil.copytree(src_dir, dest_dir)
+        copied += 1
+    for folder_name in WIN16_FOLDERS:
+        classic = _dir_ci(src_root, folder_name)
+        if classic is None:
+            continue
+        dest_classic = dest_root / classic.name
+        if dest_classic.exists():
+            shutil.rmtree(dest_classic)
+        shutil.copytree(classic, dest_classic)
+        copied += sum(1 for _ in dest_classic.glob("*.ad"))
+    host = find_host_scr(source_prefix)
+    if host is not None:
+        for dest in (
+            Path(dest_prefix) / "drive_c" / "scrsaver" / host.name,
+            Path(dest_prefix) / "drive_c" / "windows" / "system32" / host.name,
+        ):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(host, dest)
+            copied += 1
+    log.info("Copied 16-bit After Dark files from %s to %s", source_prefix, dest_prefix)
+    return copied
+
+
+def write_engine_path(session) -> None:
+    """Point this bottle at C:\\After Dark so OldMod16 can load Deluxe Classics."""
+    from . import wineutil
+
+    wine = wineutil.wine_binary(session)
+    env = wineutil.wine_env(session)
+    commands = [
+        [
+            wine,
+            "reg",
+            "add",
+            r"HKLM\Software\Berkeley Systems\After Dark\4.00",
+            "/v",
+            "Path",
+            "/d",
+            r"C:\After Dark",
+            "/f",
+        ],
+        [wine, "reg", "add", REG_AFTER_DARK, "/v", "SelectedFolder", "/d", "Deluxe Classics", "/f"],
+    ]
+    for cmd in commands:
+        subprocess.run(
+            cmd,
+            env=env,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+
+
+def _file_ci(folder: Path, name: str) -> Path | None:
+    wanted = name.lower()
+    try:
+        for child in folder.iterdir():
+            if child.is_file() and child.name.lower() == wanted:
+                return child
+    except OSError:
+        return None
+    return None
+
+
+def _dir_ci(folder: Path, name: str) -> Path | None:
+    wanted = name.lower()
+    try:
+        for child in folder.iterdir():
+            if child.is_dir() and child.name.lower() == wanted:
+                return child
+    except OSError:
+        return None
+    return None
 
 
 def _same_prefix(name: str, current: str) -> bool:

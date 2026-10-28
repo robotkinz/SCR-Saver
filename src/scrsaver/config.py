@@ -80,6 +80,7 @@ class ManagedPrefix:
     origin: str = ORIGIN_OWNED
     source_path: str = ""
     steam_appid: str = ""
+    wine_arch: str = ""
 
     def is_imported(self) -> bool:
         return self.origin in (ORIGIN_IMPORTED, ORIGIN_STEAM) or bool(self.source_path)
@@ -160,6 +161,13 @@ def _coerce_cpu_percent(value: Any) -> float:
     except (TypeError, ValueError):
         return 100.0
     return clamp_quota_percent(number)
+
+
+def _coerce_wine_arch(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in ("win32", "win64"):
+        return text
+    return ""
 
 
 def _coerce_int(value: Any, default: int, minimum: int, maximum: int) -> int:
@@ -251,6 +259,7 @@ def load_config() -> AppConfig:
                 origin=origin,
                 source_path=str(item.get("source_path") or ""),
                 steam_appid=str(item.get("steam_appid") or ""),
+                wine_arch=_coerce_wine_arch(item.get("wine_arch")),
             )
         )
 

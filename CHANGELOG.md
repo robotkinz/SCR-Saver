@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.10-alpha — 2026-10-28
+
+- 16-bit After Dark Deluxe Classics go in a 32-bit Wine prefix; import `data/profiles/after-dark-deluxe-classics.scrsaver.json`
+- Wine Prefix Wizard can create a 32-bit bottle for those modules
+
 ## 0.1.9-alpha — 2026-10-28
 
 - After Dark savers play on every display; the second screen is no longer a white void

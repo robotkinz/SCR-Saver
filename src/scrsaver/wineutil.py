@@ -26,6 +26,7 @@ class WineSession:
     runner: WineRunner
     prefix: Path
     origin_prefix: Path | None = None
+    wine_arch: str = ""
 
     @property
     def wine(self) -> str:
@@ -56,7 +57,7 @@ def session_for(entry=None) -> WineSession:
         prefix = paths.prefix_for_entry(entry.id)
     else:
         prefix = paths.wineprefix_dir()
-    return WineSession(runner=runner, prefix=prefix)
+    return _session_with_arch(WineSession(runner=runner, prefix=prefix), custom_prefix or prefix.name)
 
 
 def _runner_slug(runner_id: str) -> str:
@@ -69,7 +70,7 @@ def session_for_installer(runner_id: str) -> WineSession:
     if runner is None:
         raise FileNotFoundError(f"Wine/Proton '{runner_id}' was not found on this system.")
     prefix = paths.prefixes_dir() / f"installer-{_runner_slug(runner.id)}"
-    return WineSession(runner=runner, prefix=prefix)
+    return _session_with_arch(WineSession(runner=runner, prefix=prefix), prefix.name)
 
 
 def available_prefixes(cfg) -> list[tuple[str, str, str]]:
@@ -93,6 +94,9 @@ def available_prefixes(cfg) -> list[tuple[str, str, str]]:
             extra = "Steam · "
         elif origin == "imported" or getattr(item, "source_path", ""):
             extra = "imported · "
+        arch = str(getattr(item, "wine_arch", "") or "") or prefix_arch(prefix_path_for_name(name, cfg))
+        if arch == "win32":
+            extra += "32-bit · "
         choices.append((f"{name}  — {extra}{runner_display(runner_id)}", name, runner_id))
     roots = [paths.data_dir(), paths.prefixes_dir()]
     for root in roots:
@@ -108,7 +112,10 @@ def available_prefixes(cfg) -> list[tuple[str, str, str]]:
             if path.name.startswith(".") or path.name.lower() in seen or path.name.lower() in paths.RESERVED_PREFIX_NAMES:
                 continue
             seen.add(path.name.lower())
-            choices.append((path.name, path.name, SYSTEM_ID))
+            label = path.name
+            if prefix_arch(path) == "win32":
+                label = f"{path.name}  — 32-bit"
+            choices.append((label, path.name, SYSTEM_ID))
     return choices
 
 
@@ -116,7 +123,114 @@ def session_for_named_prefix(name: str, runner_id: str) -> WineSession:
     runner = get_runner(runner_id)
     if runner is None:
         raise FileNotFoundError(f"Wine/Proton '{runner_id}' was not found on this system.")
-    return WineSession(runner=runner, prefix=prefix_path_for_name(name))
+    return _session_with_arch(WineSession(runner=runner, prefix=prefix_path_for_name(name)), name)
+
+
+def prefix_arch(prefix: Path) -> str:
+    """win32 or win64 from a prefix's system.reg, or empty if the bottle is not created yet."""
+    reg = Path(prefix) / "system.reg"
+    try:
+        with reg.open("r", encoding="utf-8", errors="replace") as handle:
+            for _ in range(12):
+                line = handle.readline()
+                if not line:
+                    break
+                text = line.strip().lower()
+                if text == "#arch=win32":
+                    return "win32"
+                if text == "#arch=win64":
+                    return "win64"
+    except OSError:
+        return ""
+    return ""
+
+
+def _managed_wine_arch(name: str) -> str:
+    if not name:
+        return ""
+    try:
+        from .config import load_config
+
+        cfg = load_config()
+    except Exception:
+        return ""
+    key = name.strip()
+    for item in getattr(cfg, "managed_prefixes", []) or []:
+        if item.name == key or (key in ("", "wineprefix") and item.name in ("", "wineprefix")):
+            arch = str(getattr(item, "wine_arch", "") or "").lower()
+            if arch in ("win32", "win64"):
+                return arch
+    return ""
+
+
+def session_arch(session: WineSession) -> str:
+    arch = (session.wine_arch or "").lower()
+    if arch in ("win32", "win64"):
+        return arch
+    found = prefix_arch(session.prefix)
+    if found:
+        return found
+    return "win64"
+
+
+def _session_with_arch(session: WineSession, name: str = "") -> WineSession:
+    if not session.wine_arch:
+        session.wine_arch = prefix_arch(session.prefix) or _managed_wine_arch(name)
+    return session
+
+
+_WIN32_SUPPORT: dict[str, bool] = {}
+
+
+def wine_supports_win32(runner: WineRunner | None = None) -> bool:
+    """False on wow64-only Wine, which cannot create WINEARCH=win32 prefixes."""
+    current = runner or get_runner(SYSTEM_ID)
+    key = str(current.wine_bin) if current is not None else (shutil.which("wine") or "wine")
+    cached = _WIN32_SUPPORT.get(key)
+    if cached is not None:
+        return cached
+    wine = key
+    probe = paths.data_dir() / ".cache" / "win32-probe"
+    try:
+        if probe.exists():
+            shutil.rmtree(probe)
+        probe.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env["WINEPREFIX"] = str(probe)
+        env["WINEARCH"] = "win32"
+        env["WINEDEBUG"] = "-all"
+        env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d;mscoree=d;mshtml=d"
+        completed = subprocess.run(
+            [wine, "wineboot", "--init"],
+            env=env,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=45,
+        )
+        blob = (completed.stderr or b"").decode("utf-8", errors="replace").lower()
+        ok = prefix_arch(probe) == "win32"
+        if "not supported in wow64" in blob or "winearch is set to 'win32'" in blob:
+            ok = False
+        _WIN32_SUPPORT[key] = ok
+        return ok
+    except (OSError, subprocess.TimeoutExpired):
+        _WIN32_SUPPORT[key] = False
+        return False
+    finally:
+        try:
+            shutil.rmtree(probe, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def win32_unsupported_message() -> str:
+    return (
+        "This Wine is wow64-only and cannot create a 32-bit prefix. "
+        "16-bit After Dark Deluxe Classics need a Wine build that supports "
+        "WINEARCH=win32 (not wow64-only). Create the 32-bit bottle on a computer "
+        "with that Wine, then import the Deluxe Classics compatibility script there."
+    )
 
 
 def prefix_path_for_name(name: str, cfg=None) -> Path:
@@ -721,7 +835,7 @@ def wine_env(session: WineSession | None = None) -> dict[str, str]:
     env["WINELOADER"] = current.wine
     env["WINESERVER"] = current.wineserver
     env["WINEDEBUG"] = "-all"
-    env["WINEARCH"] = "win64"
+    env["WINEARCH"] = session_arch(current)
     wine_dir = str(Path(current.wine).parent)
     env["PATH"] = wine_dir + os.pathsep + env.get("PATH", "")
     overrides = env.get("WINEDLLOVERRIDES", "")
@@ -870,7 +984,10 @@ def setup_prefix(session: WineSession | None = None) -> None:
         prefix.mkdir(parents=True, exist_ok=True)
         env = wine_env(current)
         if not prefix_ready(current):
-            log.info("Initializing Wine prefix at %s with %s", prefix, current.runner.name)
+            arch = session_arch(current)
+            if arch == "win32" and not wine_supports_win32(current.runner):
+                raise RuntimeError(win32_unsupported_message())
+            log.info("Initializing Wine prefix at %s (%s) with %s", prefix, arch, current.runner.name)
             boot_env = dict(env)
             boot_env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d;mscoree=d;mshtml=d"
             completed = subprocess.run(
@@ -1118,7 +1235,12 @@ def clone_session_for_display(source: WineSession, index: int) -> WineSession:
     src = source.prefix
     dest = display_clone_path(src, index)
     origin = source.origin_prefix or src
-    clone = WineSession(runner=source.runner, prefix=dest, origin_prefix=origin)
+    clone = WineSession(
+        runner=source.runner,
+        prefix=dest,
+        origin_prefix=origin,
+        wine_arch=session_arch(source),
+    )
     if dest.exists():
         kill_prefix(clone)
     dest.mkdir(parents=True, exist_ok=True)
@@ -1150,7 +1272,14 @@ def list_display_clone_sessions(source: WineSession) -> list[WineSession]:
         return []
     for child in children:
         if child.is_dir() and child.name.startswith(marker):
-            found.append(WineSession(runner=source.runner, prefix=child, origin_prefix=origin))
+            found.append(
+                WineSession(
+                    runner=source.runner,
+                    prefix=child,
+                    origin_prefix=origin,
+                    wine_arch=session_arch(source),
+                )
+            )
     return found
 
 

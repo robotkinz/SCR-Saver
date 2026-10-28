@@ -93,11 +93,24 @@ class ImportScriptDialog(QDialog):
         form = QFormLayout()
         self.prefix_combo = QComboBox()
         select = default_prefix or ""
+        if self.script.wine.arch == "win32" and self.script.wine.prefix_hint:
+            select = select or self.script.wine.prefix_hint
         chosen = 0
+        names: set[str] = set()
         for index, (label, name, runner_id) in enumerate(wineutil.available_prefixes(self.cfg)):
             self.prefix_combo.addItem(label, {"name": name, "runner_id": runner_id})
+            names.add(name)
             if name == select or (select in ("", "wineprefix") and name in ("", "wineprefix")):
                 chosen = index
+        if self.script.wine.arch == "win32":
+            hint_name = self.script.wine.prefix_hint or "after-dark-win16"
+            if hint_name not in names:
+                self.prefix_combo.insertItem(
+                    0,
+                    f"{hint_name}  — 32-bit (will be created)",
+                    {"name": hint_name, "runner_id": default_runner or SYSTEM_ID},
+                )
+                chosen = 0
         if default_runner and self.prefix_combo.count():
             data = self.prefix_combo.itemData(chosen)
             if isinstance(data, dict) and not data.get("runner_id"):
@@ -116,6 +129,13 @@ class ImportScriptDialog(QDialog):
         listing.setPlainText(profile.summarize_profile(self.script))
         layout.addWidget(listing, 1)
 
+        extra = ""
+        if self.script.wine.arch == "win32":
+            extra = (
+                " This script needs a 32-bit Wine prefix. If After Dark is already "
+                "installed in another bottle, the 16-bit Deluxe Classics modules are "
+                "copied into the prefix you pick."
+            )
         hint = QLabel(
             "Winetricks packages are downloaded and installed into the prefix you pick. "
             "Screensaver files and After Dark discs are not in the script — matching "
@@ -123,6 +143,7 @@ class ImportScriptDialog(QDialog):
             "/ companion files are copied into that prefix. If the script names a "
             "Windows installer, you will be asked to run your own copy next. Game "
             "scripts apply recorded autoplay only."
+            + extra
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)

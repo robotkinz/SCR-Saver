@@ -54,11 +54,16 @@ class NamePage(QWizardPage):
         self.name_edit = QLineEdit(paths.next_default_prefix_name())
         self.runner_combo = QComboBox()
         _fill_runner_combo(self.runner_combo)
+        self.arch_combo = QComboBox()
+        self.arch_combo.addItem("64-bit (default)", "win64")
+        self.arch_combo.addItem("32-bit (16-bit Windows programs)", "win32")
         layout.addRow("Prefix name", self.name_edit)
         layout.addRow("Wine / Proton", self.runner_combo)
+        layout.addRow("Architecture", self.arch_combo)
         hint = QLabel(
             "The default name is wineprefix2, then wineprefix3, and so on. "
-            "You can rename it, as in PlayOnLinux."
+            "You can rename it, as in PlayOnLinux. Use 32-bit for After Dark "
+            "Deluxe Classics and other 16-bit modules."
         )
         hint.setWordWrap(True)
         layout.addRow(hint)
@@ -81,11 +86,20 @@ class NamePage(QWizardPage):
         if dest.exists():
             QMessageBox.warning(self, "Wine prefix", f'"{name}" already exists.')
             return False
+        if self.wine_arch() == "win32":
+            runner = get_runner(self.runner_id())
+            if runner is None or not wineutil.wine_supports_win32(runner):
+                QMessageBox.warning(self, "Wine prefix", wineutil.win32_unsupported_message())
+                return False
         self.name_edit.setText(name)
         return True
 
     def runner_id(self) -> str:
         return str(self.runner_combo.currentData() or SYSTEM_ID)
+
+    def wine_arch(self) -> str:
+        arch = str(self.arch_combo.currentData() or "win64")
+        return arch if arch in ("win32", "win64") else "win64"
 
 
 class CreatePage(QWizardPage):
@@ -109,6 +123,7 @@ class CreatePage(QWizardPage):
         self.status.setText(f"Creating {name} with {runner_id}…")
         try:
             session = wineutil.session_for_named_prefix(name, runner_id)
+            session.wine_arch = wizard.name_page.wine_arch()
         except Exception as exc:
             self.status.setText(str(exc))
             self._ready = False
@@ -229,10 +244,13 @@ class PrefixSetupWizard(QWizard):
         runner_id = self.name_page.runner_id()
         self.created_name = name
         self.created_runner_id = runner_id
+        arch = self.name_page.wine_arch()
         if not any(item.name == name for item in self.cfg.managed_prefixes):
-            self.cfg.managed_prefixes.append(ManagedPrefix(name=name, runner_id=runner_id))
+            self.cfg.managed_prefixes.append(
+                ManagedPrefix(name=name, runner_id=runner_id, wine_arch=arch)
+            )
             save_config(self.cfg)
-        log.info("Recorded managed prefix %s (%s)", name, runner_id)
+        log.info("Recorded managed prefix %s (%s, %s)", name, runner_id, arch)
 
 
 def _fill_runner_combo(combo: QComboBox) -> None:

@@ -34,6 +34,8 @@ class WineNeeds:
     winver: str = ""
     dll_overrides: dict[str, str] = field(default_factory=dict)
     runner_hint: str = ""
+    arch: str = ""
+    prefix_hint: str = ""
 
 
 @dataclass
@@ -119,6 +121,8 @@ def load_profile(path: Path) -> ProfileScript:
         winver=str(wine_raw.get("winver") or ""),
         dll_overrides={str(k): str(v) for k, v in overrides.items() if k and v},
         runner_hint=str(wine_raw.get("runner_hint") or ""),
+        arch=_coerce_wine_arch(wine_raw.get("arch")),
+        prefix_hint=str(wine_raw.get("prefix_hint") or ""),
     )
     prefix_raw = raw.get("prefix") if isinstance(raw.get("prefix"), dict) else {}
     try:
@@ -157,6 +161,8 @@ def dump_profile(profile: ProfileScript) -> str:
             "winver": profile.wine.winver,
             "dll_overrides": profile.wine.dll_overrides,
             "runner_hint": profile.wine.runner_hint,
+            "arch": profile.wine.arch,
+            "prefix_hint": profile.wine.prefix_hint,
         },
         "prefix": {
             "cpu_percent": profile.cpu_percent,
@@ -228,6 +234,7 @@ def export_prefix(cfg: AppConfig, prefix_name: str) -> ProfileScript:
             winetricks=verbs,
             winver=shared_winver,
             runner_hint=(rec.runner_id if rec and rec.runner_id != SYSTEM_ID else shared_runner),
+            arch=(rec.wine_arch if rec and rec.wine_arch else wineutil.prefix_arch(folder)),
         ),
         cpu_percent=float(rec.cpu_percent) if rec else 100.0,
         single_core=bool(rec.single_core) if rec else False,
@@ -259,9 +266,36 @@ def apply_profile(
         session = wineutil.WineSession(runner=runner_obj, prefix=paths.wineprefix_dir())
     else:
         session = wineutil.session_for_named_prefix(key, runner)
+    wanted_arch = (profile.wine.arch or "").lower()
+    if wanted_arch == "win32":
+        existing_arch = wineutil.prefix_arch(session.prefix)
+        if existing_arch == "win64":
+            raise RuntimeError(
+                "This script needs a 32-bit Wine prefix. The bottle you picked is 64-bit. "
+                "Create a 32-bit prefix in the Wine Prefix Wizard (Architecture: 32-bit), "
+                "then import this script into that bottle."
+            )
+        session.wine_arch = "win32"
     result = ApplyResult(prefix_path=str(session.prefix))
     say(f"Using prefix {session.prefix}")
     wineutil.setup_prefix(session)
+    if wanted_arch == "win32":
+        from .afterdark import copy_win16_into_prefix, find_win16_source, write_engine_path
+
+        source = find_win16_source(cfg, exclude=session.prefix)
+        if source is not None:
+            count = copy_win16_into_prefix(source, session.prefix)
+            write_engine_path(session)
+            say(f"Copied 16-bit After Dark Deluxe Classics ({count} files) from {source}")
+        else:
+            dest_classic = session.prefix / "drive_c" / "After Dark" / "Deluxe Classics"
+            if not dest_classic.is_dir() or not any(dest_classic.glob("*.ad")):
+                result.warnings.append(
+                    "No After Dark Deluxe Classics were found in another prefix. "
+                    "Run Typical Install from your After Dark CD into this 32-bit prefix, "
+                    "then import this script again."
+                )
+                say(result.warnings[-1])
 
     already = {verb.lower() for verb in wineutil.read_winetricks_log(session.prefix)}
     needed = [verb for verb in profile.wine.winetricks if verb.lower() not in already]
@@ -287,6 +321,8 @@ def apply_profile(
         wineutil.set_dll_overrides(session, profile.wine.dll_overrides)
 
     rec = _ensure_prefix_record(cfg, key, runner)
+    if wanted_arch in ("win32", "win64"):
+        rec.wine_arch = wanted_arch
     rec.cpu_percent = float(profile.cpu_percent)
     rec.single_core = bool(profile.single_core)
     if profile.dpi >= 96:
@@ -354,6 +390,10 @@ def summarize_profile(profile: ProfileScript) -> str:
         wine_bits.append("DLL overrides:")
         for name, mode in profile.wine.dll_overrides.items():
             wine_bits.append(f"  • {name} = {mode}")
+    if profile.wine.arch == "win32":
+        wine_bits.append("Architecture: 32-bit Wine prefix (required for 16-bit Deluxe Classics)")
+        if profile.wine.prefix_hint:
+            wine_bits.append(f"Suggested prefix name: {profile.wine.prefix_hint}")
     if profile.wine.runner_hint:
         wine_bits.append(f"Suggested Wine/Proton: {profile.wine.runner_hint}")
     if profile.installer.present():
@@ -465,6 +505,13 @@ def default_export_name(prefix_name: str) -> str:
     key = prefix_name or "wineprefix"
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in key).strip("-") or "wineprefix"
     return f"{safe}.scrsaver.json"
+
+
+def _coerce_wine_arch(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in ("win32", "win64"):
+        return text
+    return ""
 
 
 def _coerce_dpi(value: Any) -> int:
