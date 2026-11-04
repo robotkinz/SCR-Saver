@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 from logging.handlers import RotatingFileHandler
@@ -29,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "import":
         return _import_cli(args.files)
 
+    _disable_wayland_blur()
     QCoreApplication.setApplicationName("SCR Saver")
     QCoreApplication.setOrganizationName("scrsaver")
     QCoreApplication.setApplicationVersion(__version__)
@@ -82,6 +84,15 @@ def main(argv: list[str] | None = None) -> int:
     mark_clean_exit()
     controller.shutdown()
     return int(code)
+
+
+def _disable_wayland_blur() -> None:
+    # KWin drops the connection when Breeze sets blur on a combo popup that was
+    # already destroyed ("tried to set blur region on destroyed surface").
+    blur = "ext_background_effect_manager_v1"
+    disabled = [item for item in os.environ.get("QT_WAYLAND_DISABLED_INTERFACES", "").split(",") if item]
+    if blur not in disabled:
+        os.environ["QT_WAYLAND_DISABLED_INTERFACES"] = ",".join([*disabled, blur])
 
 
 def _parse(argv: list[str] | None) -> argparse.Namespace:

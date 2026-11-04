@@ -1200,6 +1200,84 @@ def set_dll_overrides(session: WineSession, overrides: dict[str, str]) -> None:
         )
 
 
+_REG_HIVES = {
+    "HKCU",
+    "HKLM",
+    "HKCR",
+    "HKU",
+    "HKEY_CURRENT_USER",
+    "HKEY_LOCAL_MACHINE",
+    "HKEY_CLASSES_ROOT",
+    "HKEY_USERS",
+}
+
+
+def _safe_reg_key(key: str) -> bool:
+    text = (key or "").replace("/", "\\").strip()
+    if not text or len(text) > 512:
+        return False
+    hive, sep, rest = text.partition("\\")
+    if hive.upper() not in _REG_HIVES or not sep:
+        return False
+    return all(ch.isalnum() or ch in " \\._-+!()#" for ch in rest)
+
+
+def _safe_reg_name(name: str) -> bool:
+    text = (name or "").strip()
+    if not text or len(text) > 80:
+        return False
+    return all(ch.isalnum() or ch in "._-+" for ch in text)
+
+
+def add_registry_value(
+    session: WineSession,
+    key: str,
+    name: str,
+    data: str,
+    value_type: str = "REG_SZ",
+) -> None:
+    """Write one registry value with wine reg add."""
+    key = (key or "").replace("/", "\\").strip()
+    name = (name or "").strip()
+    value_type = (value_type or "REG_SZ").strip().upper() or "REG_SZ"
+    if not _safe_reg_key(key) or not _safe_reg_name(name):
+        return
+    if value_type not in {"REG_SZ", "REG_EXPAND_SZ", "REG_DWORD"}:
+        return
+    if value_type == "REG_DWORD":
+        try:
+            data = str(int(str(data), 0))
+        except (TypeError, ValueError):
+            return
+    else:
+        data = str(data)
+        if not data or any(ch in data for ch in "\x00\n\r"):
+            return
+        if len(data) > 2048:
+            return
+    setup_prefix(session)
+    subprocess.run(
+        [
+            session.wine,
+            "reg",
+            "add",
+            key,
+            "/v",
+            name,
+            "/t",
+            value_type,
+            "/d",
+            data,
+            "/f",
+        ],
+        env=wine_env(session),
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+    )
+
+
 CLONE_DIR_NAME = ".display-clones"
 _CLONE_FILES = ("system.reg", "user.reg", "userdef.reg", ".update-timestamp")
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,25 @@ class GameRecipe:
 
 
 @dataclass
+class AssetPack:
+    """A zip next to the JSON, extracted into the prefix (drive_c by default)."""
+
+    zip_name: str = ""
+    extract_to: str = "drive_c"
+
+    def present(self) -> bool:
+        return bool(self.zip_name)
+
+
+@dataclass
+class RegistryValue:
+    key: str = ""
+    value: str = ""
+    data: str = ""
+    reg_type: str = "REG_SZ"
+
+
+@dataclass
 class ProfileScript:
     name: str = ""
     description: str = ""
@@ -91,8 +111,11 @@ class ProfileScript:
     single_core: bool = False
     dpi: int = 0
     installer: InstallerHint = field(default_factory=InstallerHint)
+    assets: AssetPack = field(default_factory=AssetPack)
+    registry: list[RegistryValue] = field(default_factory=list)
     screensavers: list[SaverRecipe] = field(default_factory=list)
     games: list[GameRecipe] = field(default_factory=list)
+    source_path: str = ""
 
 
 @dataclass
@@ -100,11 +123,13 @@ class ApplyResult:
     prefix_path: str = ""
     verbs_run: list[str] = field(default_factory=list)
     savers_updated: list[str] = field(default_factory=list)
+    savers_imported: list[str] = field(default_factory=list)
     savers_missing: list[str] = field(default_factory=list)
     games_updated: list[str] = field(default_factory=list)
     games_missing: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     installer: InstallerHint = field(default_factory=InstallerHint)
+    assets_extracted: str = ""
 
 
 def load_profile(path: Path) -> ProfileScript:
@@ -135,6 +160,17 @@ def load_profile(path: Path) -> ProfileScript:
         note=str(inst_raw.get("note") or ""),
         exe_names=_string_list(inst_raw.get("exe_names")),
     )
+    assets_raw = raw.get("assets") if isinstance(raw.get("assets"), dict) else {}
+    zip_name = str(assets_raw.get("zip") or assets_raw.get("zip_name") or "").strip()
+    extract_to = str(assets_raw.get("extract_to") or "drive_c").strip() or "drive_c"
+    assets = AssetPack(zip_name=zip_name, extract_to=extract_to)
+    registry = []
+    for raw_item in raw.get("registry") or []:
+        if not isinstance(raw_item, dict):
+            continue
+        parsed = _registry_from_raw(raw_item)
+        if parsed is not None:
+            registry.append(parsed)
     return ProfileScript(
         name=str(raw.get("name") or path.stem),
         description=str(raw.get("description") or ""),
@@ -144,8 +180,11 @@ def load_profile(path: Path) -> ProfileScript:
         single_core=bool(prefix_raw.get("single_core", raw.get("single_core", False))),
         dpi=_coerce_dpi(prefix_raw.get("dpi", raw.get("dpi", 0))),
         installer=installer,
+        assets=assets,
+        registry=registry,
         screensavers=[_saver_from_raw(item) for item in raw.get("screensavers") or [] if isinstance(item, dict)],
         games=[_game_from_raw(item) for item in raw.get("games") or [] if isinstance(item, dict)],
+        source_path=str(path.expanduser().resolve()),
     )
 
 
@@ -178,6 +217,21 @@ def dump_profile(profile: ProfileScript) -> str:
             "exe_names": profile.installer.exe_names,
             "note": profile.installer.note,
         }
+    if profile.assets.present():
+        payload["assets"] = {
+            "zip": profile.assets.zip_name,
+            "extract_to": profile.assets.extract_to or "drive_c",
+        }
+    if profile.registry:
+        payload["registry"] = [
+            {
+                "key": item.key,
+                "value": item.value,
+                "type": item.reg_type,
+                "data": item.data,
+            }
+            for item in profile.registry
+        ]
     return json.dumps(payload, indent=2) + "\n"
 
 
@@ -279,6 +333,14 @@ def apply_profile(
     result = ApplyResult(prefix_path=str(session.prefix))
     say(f"Using prefix {session.prefix}")
     wineutil.setup_prefix(session)
+    if profile.assets.present():
+        _extract_profile_assets(profile, session, result, say)
+        _import_profile_savers(cfg, profile, session, key, result, say)
+    if profile.registry:
+        say(f"Writing {len(profile.registry)} registry value(s)")
+        for item in profile.registry:
+            wineutil.add_registry_value(session, item.key, item.value, item.data, item.reg_type)
+    _place_native_d3drm(session)
     if wanted_arch == "win32":
         from .afterdark import copy_win16_into_prefix, find_win16_source, write_engine_path
 
@@ -412,6 +474,15 @@ def summarize_profile(profile: ProfileScript) -> str:
             f"Clock: {profile.cpu_percent:g}% of one CPU"
             + (" (single-core)" if profile.single_core else "")
         )
+    if profile.assets.present():
+        wine_bits.append(
+            f"Assets zip (keep next to this JSON): {profile.assets.zip_name}"
+        )
+        wine_bits.append(
+            "Scene files and .scr files in that zip are copied into the prefix and library."
+        )
+    if profile.registry:
+        wine_bits.append(f"Registry values: {len(profile.registry)}")
     if wine_bits:
         lines.extend(wine_bits)
         lines.append("")
@@ -441,10 +512,16 @@ def summarize_profile(profile: ProfileScript) -> str:
                 extra += ", stop on input"
             lines.append(f"  • {item.name or item.exe_name or item.steam_appid} — {extra}")
         lines.append("")
-    lines.append(
-        "This script does not include .scr files, demo EXEs, or copyrighted game data. "
-        "Import those yourself; matching library items pick up the settings above."
-    )
+    if profile.assets.present():
+        lines.append(
+            f"Keep {profile.assets.zip_name} in the same folder as this JSON. "
+            "Import copies those files into the prefix and adds matching .scr files to the library."
+        )
+    else:
+        lines.append(
+            "This script does not include .scr files, demo EXEs, or copyrighted game data. "
+            "Import those yourself; matching library items pick up the settings above."
+        )
     return "\n".join(lines).strip() + "\n"
 
 
@@ -660,25 +737,28 @@ def _match_saver(cfg: AppConfig, recipe: SaverRecipe) -> ScreensaverEntry | None
                 continue
             return entry
         return None
-    if recipe.sha256:
-        for entry in cfg.screensavers:
-            if entry.ad_module:
-                continue
-            if entry.sha256 and entry.sha256 == recipe.sha256 and not entry.is_steam() and not entry.is_prefix_exe():
-                return entry
+    candidates = [
+        entry
+        for entry in cfg.screensavers
+        if not entry.ad_module and not entry.is_steam() and not entry.is_prefix_exe()
+    ]
+    # Filename first: Plus! Organic Art ships four identical .scr binaries with different names.
+    # Do not fall through to sha256 when a filename is given — that would collapse
+    # those four copies onto whichever one is already in the library.
     if recipe.filename:
         wanted = recipe.filename.lower()
-        for entry in cfg.screensavers:
-            if entry.ad_module:
-                continue
-            if entry.filename.lower() == wanted and not entry.is_steam() and not entry.is_prefix_exe():
+        for entry in candidates:
+            if entry.filename.lower() == wanted:
+                return entry
+        return None
+    if recipe.sha256:
+        for entry in candidates:
+            if entry.sha256 and entry.sha256 == recipe.sha256:
                 return entry
     if recipe.name:
         wanted = recipe.name.lower()
-        for entry in cfg.screensavers:
-            if entry.ad_module:
-                continue
-            if entry.name.lower() == wanted and not entry.is_steam() and not entry.is_prefix_exe():
+        for entry in candidates:
+            if entry.name.lower() == wanted:
                 return entry
     return None
 
@@ -733,3 +813,131 @@ def _apply_game_recipe(entry: ScreensaverEntry, recipe: GameRecipe) -> None:
         entry.keystroke_loop = bool(recipe.keystroke_loop)
         entry.stop_on_input = bool(recipe.stop_on_input)
     entry.interactive = bool(recipe.interactive)
+
+
+def _registry_from_raw(item: dict) -> RegistryValue | None:
+    key = str(item.get("key") or "").strip()
+    name = str(item.get("value") or item.get("name") or "").strip()
+    data = str(item.get("data") or "")
+    if not key or not name:
+        return None
+    reg_type = str(item.get("type") or item.get("reg_type") or "REG_SZ").strip().upper() or "REG_SZ"
+    return RegistryValue(key=key, value=name, data=data, reg_type=reg_type)
+
+
+def _assets_dest(session, extract_to: str) -> Path:
+    text = (extract_to or "drive_c").replace("\\", "/").strip().strip("/")
+    if not text or text == ".":
+        return Path(session.prefix)
+    parts = Path(text).parts
+    if Path(text).is_absolute() or any(part in ("..", "") for part in parts):
+        raise ValueError(f"Invalid assets extract_to: {extract_to}")
+    return Path(session.prefix) / text
+
+
+def _safe_zip_member(name: str) -> Path | None:
+    text = name.replace("\\", "/").strip()
+    if not text or text.endswith("/"):
+        return None
+    path = Path(text)
+    if path.is_absolute() or any(part in ("..", "") for part in path.parts):
+        return None
+    return path
+
+
+def _find_assets_zip(profile: ProfileScript) -> Path | None:
+    name = Path(profile.assets.zip_name).name
+    if not name:
+        return None
+    search: list[Path] = []
+    if profile.source_path:
+        parent = Path(profile.source_path).expanduser().resolve().parent
+        search.append(parent / name)
+    search.append(Path.home() / "scrsaver savers" / name)
+    for candidate in search:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _extract_profile_assets(profile: ProfileScript, session, result: ApplyResult, say) -> None:
+    zip_path = _find_assets_zip(profile)
+    if zip_path is None:
+        result.warnings.append(
+            f"Assets zip '{profile.assets.zip_name}' was not next to the JSON. "
+            "Copy that zip into the same folder as the script and import again."
+        )
+        say(result.warnings[-1])
+        return
+    dest = _assets_dest(session, profile.assets.extract_to)
+    dest.mkdir(parents=True, exist_ok=True)
+    say(f"Extracting {zip_path.name} into {dest}")
+    count = 0
+    with zipfile.ZipFile(zip_path) as archive:
+        for info in archive.infolist():
+            relative = _safe_zip_member(info.filename)
+            if relative is None:
+                continue
+            target = dest / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info) as src, open(target, "wb") as out:
+                shutil.copyfileobj(src, out)
+            count += 1
+    result.assets_extracted = str(zip_path)
+    say(f"Extracted {count} file(s) from {zip_path.name}")
+
+
+def _import_profile_savers(
+    cfg: AppConfig,
+    profile: ProfileScript,
+    session,
+    prefix_name: str,
+    result: ApplyResult,
+    say,
+) -> None:
+    from .library import import_scr_file
+
+    folder = Path(session.prefix) / "drive_c" / "scrsaver"
+    if not folder.is_dir():
+        return
+    wine_prefix = "" if prefix_name in ("", "wineprefix") else prefix_name
+    for recipe in profile.screensavers:
+        filename = Path(recipe.filename or "").name
+        if not filename:
+            continue
+        source = folder / filename
+        if not source.is_file():
+            continue
+        already = any(
+            (entry.filename or "").lower() == filename.lower()
+            and not entry.ad_module
+            and not entry.is_steam()
+            and not entry.is_prefix_exe()
+            for entry in cfg.screensavers
+        )
+        if already:
+            continue
+        try:
+            entry = import_scr_file(
+                cfg,
+                source,
+                extras=[],
+                wine_prefix=wine_prefix,
+                expand_afterdark=False,
+            )
+        except FileExistsError:
+            continue
+        except Exception as exc:
+            result.warnings.append(f"{filename}: could not add to the library ({exc})")
+            say(result.warnings[-1])
+            continue
+        result.savers_imported.append(entry.name)
+        say(f"Added {entry.name} to the library")
+
+
+def _place_native_d3drm(session) -> None:
+    """Win32 prefixes load d3drm from system32; wow64 loads it from syswow64."""
+    wow = Path(session.prefix) / "drive_c" / "windows" / "syswow64" / "d3drm.dll"
+    system32 = Path(session.prefix) / "drive_c" / "windows" / "system32" / "d3drm.dll"
+    if wow.is_file() and wineutil.prefix_arch(session.prefix) == "win32":
+        wineutil._copy_if_needed(wow, system32)

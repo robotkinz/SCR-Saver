@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.11-alpha — 2026-11-04
+
+- Frame cap now limits Wine 11 savers such as 3D Maze
+- Drop-down menus no longer crash the app on KDE Wayland
+- Compatibility scripts can unpack an assets zip next to the JSON, write registry keys, and add those .scr files to the library
+- Organic Art hosts that share one binary (Falling Leaves, Geometry, Jazz, Organic Art) stay as separate list items
+
 ## 0.1.10-alpha — 2026-10-28
 
 - 16-bit After Dark Deluxe Classics go in a 32-bit Wine prefix; import `data/profiles/after-dark-deluxe-classics.scrsaver.json`

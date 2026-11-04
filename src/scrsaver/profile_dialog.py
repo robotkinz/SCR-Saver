@@ -138,11 +138,12 @@ class ImportScriptDialog(QDialog):
             )
         hint = QLabel(
             "Winetricks packages are downloaded and installed into the prefix you pick. "
-            "Screensaver files and After Dark discs are not in the script — matching "
-            "items already in your library receive the listed settings, and their .scr "
-            "/ companion files are copied into that prefix. If the script names a "
-            "Windows installer, you will be asked to run your own copy next. Game "
-            "scripts apply recorded autoplay only."
+            "Matching library items receive the listed settings, and their .scr / "
+            "companion files are copied into that prefix. If the script names an assets "
+            "zip, keep that zip in the same folder as the JSON — those files (including "
+            ".scr files) are extracted into the prefix and added to the library. If the "
+            "script names a Windows installer, you will be asked to run your own copy "
+            "next. Game scripts apply recorded autoplay only."
             + extra
         )
         hint.setWordWrap(True)
@@ -232,6 +233,10 @@ def _result_text(result: profile.ApplyResult) -> str:
     lines = [f"Installed into {result.prefix_path}."]
     if result.verbs_run:
         lines.append("Winetricks: " + ", ".join(result.verbs_run))
+    if result.assets_extracted:
+        lines.append("Extracted assets: " + result.assets_extracted)
+    if result.savers_imported:
+        lines.append("Added to library: " + ", ".join(result.savers_imported))
     if result.savers_updated:
         lines.append("Updated screensaver settings: " + ", ".join(result.savers_updated))
     if result.savers_missing:
