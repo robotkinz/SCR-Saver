@@ -212,6 +212,29 @@ class AdditionalSettingsDialog(QDialog):
         layout.addWidget(installer)
         self._fill_prefix_combo()
 
+        debug_box = QGroupBox("Troubleshooting")
+        debug_layout = QVBoxLayout(debug_box)
+        self.debug_box = QCheckBox("Log everything in real time")
+        self.debug_box.toggled.connect(self._on_debug_toggled)
+        debug_layout.addWidget(self.debug_box)
+        debug_hint = QLabel(
+            "Writes detailed SCR Saver messages plus Wine errors and warnings. "
+            "Open the live log, then Test a screensaver. "
+            "Leave the log on one display if you want to watch it while a saver runs."
+        )
+        debug_hint.setWordWrap(True)
+        debug_layout.addWidget(debug_hint)
+        debug_btns = QHBoxLayout()
+        live_btn = QPushButton("Show live log…")
+        live_btn.clicked.connect(self._open_live_log)
+        folder_btn = QPushButton("Open log folder")
+        folder_btn.clicked.connect(self._open_log_folder)
+        debug_btns.addWidget(live_btn)
+        debug_btns.addWidget(folder_btn)
+        debug_btns.addStretch(1)
+        debug_layout.addLayout(debug_btns)
+        layout.addWidget(debug_box)
+
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
@@ -316,6 +339,7 @@ class AdditionalSettingsDialog(QDialog):
         self.one_audio_box.blockSignals(True)
         self.audio_source_combo.blockSignals(True)
         self.fps_combo.blockSignals(True)
+        self.debug_box.blockSignals(True)
         self.mute_box.setChecked(self.cfg.mute_screensaver_audio)
         self.duck_slider.setValue(int(self.cfg.duck_percent))
         self.one_audio_box.setChecked(self.cfg.one_audio_source)
@@ -331,6 +355,7 @@ class AdditionalSettingsDialog(QDialog):
         self.key_edit.setKeySequence(QKeySequence(self.cfg.interactive_exit_key or "Escape"))
         fps_idx = self.fps_combo.findData(int(self.cfg.fps_limit or 0))
         self.fps_combo.setCurrentIndex(max(0, fps_idx))
+        self.debug_box.setChecked(bool(self.cfg.debug_mode))
         self.mute_box.blockSignals(False)
         self.duck_slider.blockSignals(False)
         self.skip_fs.blockSignals(False)
@@ -343,6 +368,7 @@ class AdditionalSettingsDialog(QDialog):
         self.one_audio_box.blockSignals(False)
         self.audio_source_combo.blockSignals(False)
         self.fps_combo.blockSignals(False)
+        self.debug_box.blockSignals(False)
         self._on_duck_changed(self.duck_slider.value())
         self._refresh_one_audio_widgets()
         self._refresh_tile_widgets()
@@ -377,6 +403,7 @@ class AdditionalSettingsDialog(QDialog):
         self.cfg.tile_scale_content = self.tile_scale_box.isChecked()
         self.cfg.fps_limit = int(self.fps_combo.currentData() or 0)
         self.cfg.interactive_exit_key = sequence_to_name(self.key_edit.keySequence())
+        self.cfg.debug_mode = self.debug_box.isChecked()
         save_config(self.cfg)
         self._apply_config()
 
@@ -389,6 +416,22 @@ class AdditionalSettingsDialog(QDialog):
         self._refresh_rotate_widgets()
         if not self._loading:
             self._save()
+
+    def _on_debug_toggled(self, checked: bool) -> None:
+        if not self._loading:
+            self._save()
+        if checked:
+            self._open_live_log()
+
+    def _open_live_log(self) -> None:
+        from .debug import show_live_log
+
+        show_live_log(self.parent() or self)
+
+    def _open_log_folder(self) -> None:
+        from .debug import open_log_folder
+
+        open_log_folder()
 
     def _refresh_rotate_widgets(self) -> None:
         on = self.rotate_box.isChecked()

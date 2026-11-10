@@ -295,6 +295,50 @@ def cpu_policy_for(session: WineSession) -> tuple[float, bool]:
     return 100.0, False
 
 
+def display_scale_for(session: WineSession) -> tuple[str, tuple[int, int] | None]:
+    """Bottle scaling mode (off/fit/stretch/widescreen) and gamescope render size."""
+    try:
+        from .config import load_config
+
+        cfg = load_config()
+    except Exception:
+        return "off", None
+    key = prefix_record_name(session.origin_prefix or session.prefix)
+    for item in getattr(cfg, "managed_prefixes", []) or []:
+        if item.name == key or (key == "wineprefix" and item.name in ("", "wineprefix")):
+            mode = str(getattr(item, "gamescope_mode", "") or "")
+            if mode not in ("off", "fit", "stretch", "widescreen"):
+                mode = "fit" if getattr(item, "gamescope_scale", False) else "off"
+            if mode in ("fit", "stretch"):
+                width, _, height = str(getattr(item, "gamescope_resolution", "") or "").partition("x")
+                if width.isdigit() and height.isdigit():
+                    return mode, (int(width), int(height))
+                return mode, None
+            return mode, None
+    return "off", None
+
+
+def gamescope_scale_for(session: WineSession) -> tuple[bool, tuple[int, int] | None]:
+    """Whether this bottle scales with gamescope, and its render size (None = screen size)."""
+    mode, size = display_scale_for(session)
+    if mode in ("fit", "stretch"):
+        return True, size
+    return False, None
+
+
+def stage_fill_helper(session: WineSession) -> str:
+    """Copy scrsaver_fillwnd.exe into the prefix and return its C:\\ path."""
+    source = paths.project_root() / "native" / "scrsaver_fillwnd.exe"
+    if not source.is_file():
+        raise FileNotFoundError(
+            "Widescreen helper is missing. From the SCR Saver source folder run: make"
+        )
+    dest = session.prefix / "drive_c" / "scrsaver" / "scrsaver_fillwnd.exe"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _copy_if_needed(source, dest)
+    return r"C:\scrsaver\scrsaver_fillwnd.exe"
+
+
 def dpi_for(session: WineSession) -> int:
     try:
         from .config import load_config
@@ -383,20 +427,22 @@ def popen_wine(
     **kwargs,
 ) -> subprocess.Popen[bytes]:
     """Launch a Wine command with this prefix's CPU slowdown policy."""
+    wait_for_cleanup()
     run_env = dict(env or wine_env(session))
     percent, single_core = cpu_policy_for(session)
     if single_core:
         run_env["WINE_CPU_TOPOLOGY"] = "1:0"
+    cmd = list(argv)
     fps_limit = fps_limit_for(session)
     if fps_limit > 0:
         _apply_frame_pace(run_env, fps_limit)
+        cmd = _keep_preload_inside_gamescope(cmd, run_env)
         try:
             from .audio import ensure_silent_sink
 
             run_env["PULSE_SINK"] = ensure_silent_sink()
         except Exception:
             pass
-    cmd = list(argv)
     properties: list[str] = []
     if percent < 100:
         from .cpu_limit import quota_property
@@ -416,6 +462,10 @@ def popen_wine(
         "stderr": subprocess.DEVNULL,
         "start_new_session": True,
     }
+    from . import debug as debuglog
+
+    if "stderr" not in kwargs:
+        popen_kwargs.update(debuglog.wine_popen_streams())
     popen_kwargs.update(kwargs)
 
     def _pin() -> None:
@@ -456,6 +506,18 @@ def _apply_frame_pace(env: dict[str, str], fps: int) -> None:
     if so.is_file():
         prev = env.get("LD_PRELOAD", "")
         env["LD_PRELOAD"] = str(so) if not prev else f"{so}:{prev}"
+
+
+def _keep_preload_inside_gamescope(cmd: list[str], env: dict[str, str]) -> list[str]:
+    # The pace shim falls back to pacing glFlush, which gamescope's Xwayland calls
+    # constantly; preloading it there throttles the whole nested X server.
+    if not cmd or Path(cmd[0]).name != "gamescope" or "--" not in cmd:
+        return cmd
+    preload = env.pop("LD_PRELOAD", "")
+    if not preload:
+        return cmd
+    split = cmd.index("--") + 1
+    return [*cmd[:split], "env", f"LD_PRELOAD={preload}", *cmd[split:]]
 
 
 def launch_exe(session: WineSession, linux_path: Path) -> None:
@@ -834,7 +896,9 @@ def wine_env(session: WineSession | None = None) -> dict[str, str]:
     env["WINE"] = current.wine
     env["WINELOADER"] = current.wine
     env["WINESERVER"] = current.wineserver
-    env["WINEDEBUG"] = "-all"
+    from . import debug as debuglog
+
+    env["WINEDEBUG"] = debuglog.wine_debug_env()
     env["WINEARCH"] = session_arch(current)
     wine_dir = str(Path(current.wine).parent)
     env["PATH"] = wine_dir + os.pathsep + env.get("PATH", "")
@@ -977,6 +1041,7 @@ def set_app_windows_version(exe_name: str, version: str, session: WineSession | 
 
 
 def setup_prefix(session: WineSession | None = None) -> None:
+    wait_for_cleanup()
     current = session or session_for(None)
     wine = wine_binary(current)
     prefix = current.prefix
@@ -1397,20 +1462,41 @@ def list_prefix_pids(session: WineSession | None = None) -> list[int]:
                 if part == needle or part.startswith(needle + b"/"):
                     belongs = True
                     break
-        if not belongs:
+        if not environ:
+            # Only when the environment is unreadable: a path match on a readable
+            # process would catch file managers and editors opened on the prefix.
             try:
-                cmdline = (entry / "cmdline").read_bytes()
+                args = (entry / "cmdline").read_bytes().split(b"\0")
             except OSError:
-                cmdline = b""
-            if prefix_bytes and prefix_bytes in cmdline:
-                belongs = True
+                args = []
+            belongs = any(arg == prefix_bytes or arg.startswith(prefix_bytes + b"/") for arg in args)
         if belongs:
             found.append(pid)
     return found
 
 
+_cleanup_thread: threading.Thread | None = None
+
+
+def run_cleanup_in_background(job) -> None:
+    """Run a stop job (terminate + kill_prefix) off the UI thread."""
+    global _cleanup_thread
+    wait_for_cleanup()
+    thread = threading.Thread(target=job, name="scrsaver-stop", daemon=True)
+    _cleanup_thread = thread
+    thread.start()
+
+
+def wait_for_cleanup() -> None:
+    """Block until a background stop is done, so its wineserver -k cannot hit what starts next."""
+    thread = _cleanup_thread
+    if thread is not None and thread is not threading.current_thread():
+        thread.join()
+
+
 def kill_prefix(session: WineSession | None = None) -> None:
     """Stop every process in the private Wine prefix, including audio clients."""
+    wait_for_cleanup()
     current = session or session_for(None)
     prefix = current.prefix
     if not prefix.exists():

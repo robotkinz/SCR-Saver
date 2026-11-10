@@ -69,6 +69,7 @@ class KeystrokeRecorder(QObject):
         self._started = time.monotonic()
         self._active = True
         self._scan()
+        log.info("Recording autoplay input from: %s", ", ".join(d.name or p for p, d in self._devices.items()) or "nothing")
         if not self._devices:
             self._active = False
             raise RuntimeError(
@@ -139,8 +140,11 @@ class KeystrokeRecorder(QObject):
             return
         escape = getattr(ecodes, "KEY_ESC", 1)
         for event in incoming:
+            if event.type == ecodes.EV_SYN and event.code == getattr(ecodes, "SYN_DROPPED", 3):
+                log.warning("Autoplay recording fell behind; the kernel dropped input from %s", device.name)
             recorded = self._record_event(path, event, escape)
             if recorded == "escape":
+                log.info("Autoplay recording stopped by Escape on %s with %d event(s)", device.name, len(self._events))
                 self._active = False
                 self.finished.emit(list(self._events))
                 return
@@ -408,6 +412,8 @@ class InputEmulator:
 
 
 class KeystrokePlayback(QThread):
+    interrupted = pyqtSignal()
+
     def __init__(
         self,
         events: list[dict],
@@ -429,6 +435,11 @@ class KeystrokePlayback(QThread):
 
     def cancel(self) -> None:
         self._stop.set()
+
+    def _interrupt(self) -> None:
+        log.info("Stopping autoplay playback because of keyboard or mouse input")
+        self._stop.set()
+        self.interrupted.emit()
 
     def run(self) -> None:
         if not self._events:
@@ -477,8 +488,7 @@ class KeystrokePlayback(QThread):
                 pause_until = time.monotonic() + 0.2
                 while time.monotonic() < pause_until and not self._stop.is_set():
                     if self._user_interrupted(watch):
-                        log.info("Stopping autoplay playback because of keyboard or mouse input")
-                        self._stop.set()
+                        self._interrupt()
                         break
                     time.sleep(0.02)
             _release_held(emu, held)
@@ -509,16 +519,14 @@ class KeystrokePlayback(QThread):
             remaining = target - (time.monotonic() - t0)
             while remaining > 0 and not self._stop.is_set():
                 if self._user_interrupted(watch):
-                    log.info("Stopping autoplay playback because of keyboard or mouse input")
-                    self._stop.set()
+                    self._interrupt()
                     return
                 time.sleep(min(0.02, remaining))
                 remaining = target - (time.monotonic() - t0)
             if self._stop.is_set():
                 return
             if self._user_interrupted(watch):
-                log.info("Stopping autoplay playback because of keyboard or mouse input")
-                self._stop.set()
+                self._interrupt()
                 return
             if not _emit_frame(emu, xtest, use_uinput_mouse, frame, held):
                 self._stop.set()

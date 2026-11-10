@@ -12,6 +12,7 @@ This is a public alpha. Expect rough edges, especially around autoplay, Proton g
 - Optionally switch to another checkmarked screensaver after a set time
 - Wine and Proton runners: system Wine, Steam Proton, Proton-GE, Lutris, Heroic, Bottles, PlayOnLinux
 - Extra Wine prefixes with CPU slowdown and a global frame cap
+- Per-prefix Scaling for low-resolution savers: Off, Fit, Stretch, or Widescreen
 - Import a Windows program by EXE (Heroic layouts included) or an installed Steam game
 - Record keys, mouse movement, and clicks, then replay them when a demo starts
 - Audio duck or mute, optional mute while the frame cap is on, skip a screen that is showing fullscreen video
@@ -31,7 +32,7 @@ SCR Saver uses its own Wine prefixes under `~/.local/share/scrsaver/`. It does n
 - Membership in the `input` group (idle detection and autoplay recording)
 - Optional: `7z` for zip/exe import, distro `unshield` if you skip the bundled x86_64 helper
 - Optional: `winetricks` for compatibility scripts and extra Wine components
-- Optional: `gamescope` for **Scale the content so all of it fits in the tiled window**
+- Optional: `gamescope` for **Scale the content so all of it fits in the tiled window** and for Fit / Stretch Scaling
 
 Arch / Garuda:
 
@@ -74,6 +75,7 @@ Data lives under:
 - private Wine prefix: `~/.local/share/scrsaver/wineprefix/`
 - logs: `~/.local/share/scrsaver/logs/scrsaver.log`
 - crash reports: `~/.local/share/scrsaver/logs/crashes/`
+- Wine output while debug logging is on: `~/.local/share/scrsaver/logs/wine.log`
 
 If SCR Saver crashes, it writes a timestamped report in that crashes folder. After the next start you get a prompt with the file path and an **Open folder** button.
 
@@ -126,6 +128,10 @@ Right-click the tray icon for **Additional Settings**: audio, fullscreen-video s
 
 After Dark 4: import `data/profiles/after-dark-4.scrsaver.json` into a prefix, then run **your** After Dark CD when asked (`ADESETUP.EXE` in the ADE folder). Typical Install; skip the disc’s DirectX and online extras. SCR Saver then lists every `.ad` module and uses After Dark.scr as the host. If After Dark is already installed in a bottle, updating SCR Saver and restarting the service lists those modules without running setup again. **Configure screensaver** opens After Dark’s own settings page. 16-bit Deluxe Classics need a 32-bit Wine prefix: create one in the Wine Prefix Wizard (Architecture: 32-bit) and import `data/profiles/after-dark-deluxe-classics.scrsaver.json`. That copies the Deluxe Classics modules and 16-bit engine into the 32-bit bottle. Wow64-only Wine cannot create 32-bit prefixes.
 
+**Manage prefixes → Display → Scaling** sets how a bottle shows savers that switch to a small mode such as 640×480. **Fit** keeps 4:3 with side bars and **Stretch** fills the screen; both use `gamescope` and the **Render at** size. **Widescreen** runs the Wine desktop at screen size and keeps the saver window full size, so 3D savers draw 16:9.
+
+**Additional Settings → Troubleshooting → Log everything in real time** turns on debug logging (including Wine output in `wine.log`) and opens a live log window. Turn it on before reporting a bug.
+
 The default Wine prefix cannot be removed. Bottles created under `~/.local/share/scrsaver/` can be deleted; imported and Steam bottles are delisted only.
 
 ## Command line
@@ -156,6 +162,7 @@ Installer `.exe` files (InstallShield, zip SFX, and similar) are unpacked and ev
 - Alpha quality. Please report bugs with distro, session (X11/Wayland), Wine/Proton version, and the saver or game involved.
 - No session lock and no password prompt.
 - Multi-monitor playback is one Wine instance per screen.
+- Known issue: with more than one screen, a classic saver such as 3D Maze can quit on a non-primary screen right after it starts if the mouse pointer is on that screen. Keep the pointer on the primary screen when you click **Test now**.
 - Some savers ignore `/s` or expect a real Windows display driver.
 - Idle detection and autoplay recording need the `input` group.
 - Autoplay mouse playback is still experimental, especially inside Wine virtual desktops and FPS titles.

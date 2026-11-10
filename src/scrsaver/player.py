@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 WINDOW_PLACE_ATTEMPTS = 40
 WINDOW_PLACE_INTERVAL_MS = 250
+WINDOW_GUARD_INTERVAL_MS = 1000
 GRACE_SECONDS = 2.0
 GAMESCOPE_WMCLASS = "scrsaver-gs"
 
@@ -36,12 +37,15 @@ class ScreenTarget:
     scale_content: bool = False
     content_width: int = 0
     content_height: int = 0
+    scale_mode: str = ""
+    fill_window: bool = False
 
 
 class Player(QObject):
     started = pyqtSignal(str)
     stopped = pyqtSignal()
     failed = pyqtSignal(str)
+    macro_interrupted = pyqtSignal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -70,9 +74,13 @@ class Player(QObject):
         self._macro: KeystrokePlayback | None = None
         self._emulator: InputEmulator | None = None
         self._place_by_pid = False
+        self._guard_targets: list[ScreenTarget] = []
+        self._guard_drifted: set[str] = set()
         self._macro_timer = QTimer(self)
         self._macro_timer.setInterval(250)
         self._macro_timer.timeout.connect(self._maybe_start_macro)
+        self._pids: set[int] = set()
+        self._pids_at = 0.0
 
     def is_playing(self) -> bool:
         if self._session_active:
@@ -92,11 +100,7 @@ class Player(QObject):
         return self._interactive and self.is_playing()
 
     def macro_duration(self) -> float:
-        if not self._keystrokes:
-            return 0.0
-        if self._keystroke_loop:
-            return 24 * 3600.0
-        return max(float(item.get("t") or 0) for item in self._keystrokes) + 2.0
+        return macro_seconds(self._keystrokes, self._keystroke_loop)
 
     def wine_session(self):
         return self._wine_session
@@ -108,6 +112,14 @@ class Player(QObject):
         ):
             sessions.insert(0, self._wine_session)
         return sessions
+
+    def prefix_pids(self) -> set[int]:
+        """PIDs in the playing Wine prefixes. One /proc scan per second, shared by watch and audio."""
+        now = time.monotonic()
+        if now - self._pids_at >= 0.9:
+            self._pids = {pid for sess in self.wine_sessions() for pid in wineutil.list_prefix_pids(sess)}
+            self._pids_at = now
+        return self._pids
 
     def muted_audio_pids(self) -> set[int]:
         if not self._muted_leaders:
@@ -163,6 +175,23 @@ class Player(QObject):
             )
         if not _have_targets(targets, require_screen, tile, self.failed.emit):
             return
+        scale_mode, scale_size = ("off", None) if tile else wineutil.display_scale_for(session)
+        log.debug(
+            "Display scale mode=%s size=%s tile=%s prefix=%s",
+            scale_mode,
+            f"{scale_size[0]}x{scale_size[1]}" if scale_size else "screen",
+            tile,
+            session.prefix,
+        )
+        if scale_mode in ("fit", "stretch"):
+            if shutil.which("gamescope") is None:
+                log.warning("Bottle is set to scale with gamescope, but gamescope is not installed")
+            else:
+                targets = [
+                    _scaled_fullscreen(target, scale_size, scaler=scale_mode) for target in targets
+                ]
+        elif scale_mode == "widescreen":
+            targets = [_widescreen_target(target) for target in targets]
         if any(target.scale_content for target in targets) and shutil.which("gamescope") is None:
             self.failed.emit(
                 "Scaling a tiled screensaver needs gamescope. "
@@ -197,6 +226,13 @@ class Player(QObject):
         except OSError as exc:
             self.failed.emit(f"Could not stage screensaver for Wine: {exc}")
             return
+        fill_helper = ""
+        if any(target.fill_window for target in targets):
+            try:
+                fill_helper = wineutil.stage_fill_helper(session)
+            except FileNotFoundError as exc:
+                self.failed.emit(str(exc))
+                return
         ad_module = getattr(entry, "ad_module", "") or ""
         select_ad = None
         if ad_module:
@@ -243,6 +279,15 @@ class Player(QObject):
                         f"{overrides};{silent_dlls}" if overrides else silent_dlls
                     )
                 desk_w, desk_h = _desktop_size(target)
+                log.debug(
+                    "Desktop %s %dx%d fill=%s scale_content=%s scale_mode=%s",
+                    target.desktop,
+                    desk_w,
+                    desk_h,
+                    target.fill_window,
+                    target.scale_content,
+                    target.scale_mode or scale_mode,
+                )
                 play_path = wineutil.screentime_play_path(entry, instance_session) or wine_path
                 cmd = [
                     wine,
@@ -260,6 +305,17 @@ class Player(QObject):
                 procs.append(proc)
                 if muted:
                     muted_leaders.append(proc.pid)
+                if target.fill_window and fill_helper:
+                    fill_cmd = [
+                        wine,
+                        "explorer",
+                        f"/desktop={target.desktop},{desk_w}x{desk_h}",
+                        fill_helper,
+                        str(desk_w),
+                        str(desk_h),
+                    ]
+                    log.info("Launching widescreen helper %s", " ".join(fill_cmd))
+                    wineutil.popen_wine(instance_session, fill_cmd, env=instance_env)
         except OSError as exc:
             for proc in procs:
                 _terminate_group(proc)
@@ -432,6 +488,23 @@ class Player(QObject):
                 procs.append(proc)
                 if muted:
                     muted_leaders.append(proc.pid)
+                if target.fill_window:
+                    try:
+                        helper = wineutil.stage_fill_helper(session)
+                    except FileNotFoundError as exc:
+                        self.failed.emit(str(exc))
+                        return
+                    desk_w, desk_h = _desktop_size(target)
+                    fill_cmd = [
+                        wine,
+                        "explorer",
+                        f"/desktop={target.desktop},{desk_w}x{desk_h}",
+                        helper,
+                        str(desk_w),
+                        str(desk_h),
+                    ]
+                    log.info("Launching widescreen helper %s", " ".join(fill_cmd))
+                    wineutil.popen_wine(session, fill_cmd, env=instance_env)
                 break  # games should not be cloned per monitor
         except OSError as exc:
             for proc in procs:
@@ -495,6 +568,7 @@ class Player(QObject):
             emulator=self._emulator,
             pointer=pointer,
         )
+        self._macro.interrupted.connect(self.macro_interrupted)
         self._macro.start()
 
     def _stop_macro(self) -> None:
@@ -557,16 +631,44 @@ class Player(QObject):
         except OSError as exc:
             self.failed.emit(f"Could not open configuration dialog: {exc}")
 
-    def stop(self) -> None:
+    def stop(self, background: bool = False) -> None:
+        """Stop playback. With background=True the slow process cleanup runs off the UI thread;
+        Wine launches wait for it (wineutil.wait_for_cleanup) so it cannot kill them."""
+        wineutil.wait_for_cleanup()
         was_playing = self._session_active or bool(self._procs) or bool(self._steam_appid)
         self._place_timer.stop()
+        self._place_timer.setInterval(WINDOW_PLACE_INTERVAL_MS)
+        self._guard_targets = []
+        self._guard_drifted = set()
         self._watch_timer.stop()
         self._stop_macro()
         self._close_emulator()
         self._place_by_pid = False
         _close_saver_windows()
-        for proc in self._procs:
-            _terminate_group(proc)
+        procs = self._procs
+        steam_appid = self._steam_appid
+        steam_prefix = self._wine_session.prefix if self._wine_session is not None else None
+        sessions: list = []
+        seen: set[str] = set()
+        for sess in self.wine_sessions():
+            key = str(getattr(sess, "prefix", "") or "")
+            if key not in seen:
+                seen.add(key)
+                sessions.append(sess)
+
+        def cleanup() -> None:
+            for proc in procs:
+                _terminate_group(proc)
+            if steam_appid:
+                steam.stop_app(steam_appid, steam_prefix)
+            else:
+                for sess in sessions:
+                    wineutil.kill_prefix(sess)
+
+        if background:
+            wineutil.run_cleanup_in_background(cleanup)
+        else:
+            cleanup()
         self._procs = []
         self._targets = []
         self._playing_name = ""
@@ -574,17 +676,8 @@ class Player(QObject):
         self._session_active = False
         self._interactive = False
         self._muted_leaders = set()
-        if self._steam_appid:
-            prefix = self._wine_session.prefix if self._wine_session is not None else None
-            steam.stop_app(self._steam_appid, prefix)
-        else:
-            seen: set[str] = set()
-            for sess in self.wine_sessions():
-                key = str(getattr(sess, "prefix", "") or "")
-                if key in seen:
-                    continue
-                seen.add(key)
-                wineutil.kill_prefix(sess)
+        self._pids = set()
+        self._pids_at = 0.0
         self._wine_session = None
         self._wine_sessions = []
         self._steam_appid = ""
@@ -606,16 +699,14 @@ class Player(QObject):
             log.info("Steam game %s exited", self._steam_appid)
             self.stop()
             return
-        wrappers_alive = any(_alive(proc) for proc in self._procs)
-        prefix_alive = any(wineutil.list_prefix_pids(sess) for sess in self.wine_sessions())
-        if wrappers_alive or prefix_alive:
+        if self.prefix_pids() or any(_alive(proc) for proc in self._procs):
             return
         log.info("Wine screensaver process exited")
         self.stop()
 
     def _try_place_windows(self) -> None:
         self._place_tries += 1
-        tiled = any(target.tiled for target in self._targets)
+        tiled = any(target.tiled or target.scale_content for target in self._targets)
         html = self._place_by_pid and self._wine_session is None
         stop_after = 12 if tiled or html else 1
         if self._place_by_pid and self._targets:
@@ -644,10 +735,43 @@ class Player(QObject):
             if (not missing and self._place_tries >= stop_after) or self._place_tries >= WINDOW_PLACE_ATTEMPTS:
                 self._place_timer.stop()
             return
+        if self._guard_targets and self._place_timer.interval() == WINDOW_GUARD_INTERVAL_MS:
+            self._guard_windows()
+            return
+        if self._place_tries == 1:
+            self._guard_targets = list(self._targets)
         remaining = [target for target in self._targets if not _place_window(target)]
         self._targets = remaining
         if not remaining or self._place_tries >= WINDOW_PLACE_ATTEMPTS:
-            self._place_timer.stop()
+            # Savers that call ChangeDisplaySettings shrink their Wine desktop and
+            # KWin drops it on another output, so keep checking for the session.
+            self._place_timer.setInterval(WINDOW_GUARD_INTERVAL_MS)
+
+    def _guard_windows(self) -> None:
+        for target in self._guard_targets:
+            wid = _find_window_id(target.desktop)
+            if not wid:
+                continue
+            if _window_matches(wid, target):
+                self._guard_drifted.discard(target.desktop)
+                continue
+            if target.desktop not in self._guard_drifted:
+                self._guard_drifted.add(target.desktop)
+                log.info(
+                    "Wine desktop %s left %s (display mode change?); restoring it",
+                    target.desktop,
+                    target.name,
+                )
+            _apply_window_geometry(wid, target)
+
+
+def macro_seconds(keystrokes: list[dict], loop: bool) -> float:
+    """How long autoplay runs: 0 without a macro, a day when looping, else last event + 2 s."""
+    if not keystrokes:
+        return 0.0
+    if loop:
+        return 24 * 3600.0
+    return max(float(item.get("t") or 0) for item in keystrokes) + 2.0
 
 
 def screen_targets(display_mode: str) -> list[ScreenTarget]:
@@ -875,6 +999,48 @@ def _place_window(target: ScreenTarget) -> bool:
     return True
 
 
+def _window_matches(wid: str, target: ScreenTarget) -> bool:
+    info = _run_capture(["xwininfo", "-id", wid])
+    if not info:
+        return True
+    fields: dict[str, int] = {}
+    for line in info.splitlines():
+        key, _, value = line.strip().partition(":")
+        if key in ("Absolute upper-left X", "Absolute upper-left Y", "Width", "Height"):
+            try:
+                fields[key] = int(value.strip())
+            except ValueError:
+                return True
+    if len(fields) < 4:
+        return True
+    state = _run_capture(["xprop", "-id", wid, "_NET_WM_STATE"])
+    geometry_ok = (
+        fields["Absolute upper-left X"] == target.x
+        and fields["Absolute upper-left Y"] == target.y
+        and fields["Width"] == target.width
+        and fields["Height"] == target.height
+    )
+    fullscreen = "_NET_WM_STATE_FULLSCREEN" in state
+    if not geometry_ok or (not target.tiled and not fullscreen):
+        log.debug(
+            "Window %s on %s is %d,%d %dx%d fullscreen=%s (wanted %d,%d %dx%d tiled=%s)",
+            wid,
+            target.name,
+            fields["Absolute upper-left X"],
+            fields["Absolute upper-left Y"],
+            fields["Width"],
+            fields["Height"],
+            fullscreen,
+            target.x,
+            target.y,
+            target.width,
+            target.height,
+            target.tiled,
+        )
+        return False
+    return True
+
+
 def _apply_window_geometry(wid: str, target: ScreenTarget) -> None:
     if target.tiled:
         _run_quiet(["wmctrl", "-i", "-r", wid, "-b", "remove,fullscreen"])
@@ -942,6 +1108,38 @@ def _apply_tiling(
     return tiled
 
 
+def _scaled_fullscreen(
+    target: ScreenTarget, size: tuple[int, int] | None, scaler: str = "fit"
+) -> ScreenTarget:
+    # The Wine desktop runs at this size inside gamescope, which scales it to the
+    # screen. A saver switching to the same mode then changes nothing.
+    content_w, content_h = size or (target.width, target.height)
+    return ScreenTarget(
+        name=target.name,
+        x=target.x,
+        y=target.y,
+        width=target.width,
+        height=target.height,
+        desktop=target.desktop,
+        scale_content=True,
+        content_width=content_w,
+        content_height=content_h,
+        scale_mode=scaler if scaler in ("fit", "stretch") else "fit",
+    )
+
+
+def _widescreen_target(target: ScreenTarget) -> ScreenTarget:
+    return ScreenTarget(
+        name=target.name,
+        x=target.x,
+        y=target.y,
+        width=target.width,
+        height=target.height,
+        desktop=target.desktop,
+        fill_window=True,
+    )
+
+
 def _have_targets(targets: list[ScreenTarget], require_screen: bool, tile: bool, fail) -> bool:
     if targets:
         return True
@@ -968,6 +1166,15 @@ def _wrap_gamescope(cmd: list[str], target: ScreenTarget, env: dict[str, str]) -
     if gs is None:
         return cmd
     inner_w, inner_h = _desktop_size(target)
+    log.debug(
+        "gamescope inner %dx%d outer %dx%d scaler=%s tiled=%s",
+        inner_w,
+        inner_h,
+        target.width,
+        target.height,
+        target.scale_mode or "fit",
+        target.tiled,
+    )
     env["SDL_VIDEODRIVER"] = "x11"
     env["SDL_VIDEO_X11_WMCLASS"] = GAMESCOPE_WMCLASS
     env["ENABLE_GAMESCOPE_WSI"] = "0"
@@ -986,10 +1193,12 @@ def _wrap_gamescope(cmd: list[str], target: ScreenTarget, env: dict[str, str]) -
         "-H",
         str(max(240, target.height)),
         "-S",
-        "fit",
+        target.scale_mode if target.scale_mode in ("fit", "stretch") else "fit",
         "-F",
         "linear",
-        "--force-windows-fullscreen",
+        # Tiled desktops are sized to the screen and must fill the gap. Fullscreen
+        # ones are left alone so a saver's mode switch scales up instead of boxing.
+        *(["--force-windows-fullscreen"] if target.tiled else []),
         "--",
         *cmd,
     ]
@@ -1098,6 +1307,7 @@ def _find_window_id(title: str) -> str:
         first = output.split()
         if first:
             return first[0]
+    log.debug("No window matching title %r", title)
     return ""
 
 

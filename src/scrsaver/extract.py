@@ -12,14 +12,6 @@ from . import paths
 log = logging.getLogger(__name__)
 
 ARCHIVE_SUFFIXES = {".zip", ".7z", ".rar", ".cab", ".iso"}
-SKIP_EXE_NAMES = {
-    "setup.exe",
-    "setup16.exe",
-    "install.exe",
-    "ikernel.exe",
-    "unins000.exe",
-    "uninstall.exe",
-}
 
 
 def unshield_binary() -> str | None:
@@ -90,16 +82,6 @@ def unpack_container(source: Path, dest: Path) -> None:
 
 
 def find_screensaver_files(root: Path) -> list[Path]:
-    found: list[Path] = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        suffix = path.suffix.lower()
-        if suffix == ".scr":
-            found.append(path)
-            continue
-        if suffix == ".exe" and path.name.lower() not in SKIP_EXE_NAMES:
-            # Ignore installer leftovers; real savers named .exe are uncommon here.
-            continue
+    found = [path for path in root.rglob("*") if path.suffix.lower() == ".scr" and path.is_file()]
     found.sort(key=lambda item: item.as_posix().lower())
     return found

@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtGui import QDesktopServices, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -168,6 +168,59 @@ class PrefixManagerDialog(QDialog):
         )
         self.dpi.valueChanged.connect(self._save_dpi)
         display_form.addRow("DPI", self.dpi)
+        self.scale_mode = QComboBox()
+        has_gamescope = bool(shutil.which("gamescope"))
+        for label, value, tip in (
+            (
+                "Off",
+                "off",
+                "Leave the Wine desktop as-is. Savers that switch to 640×480 stay in a corner box.",
+            ),
+            (
+                "Fit — keep 4:3 (bars)",
+                "fit",
+                "Scale the saver up with gamescope, keeping its aspect ratio. 4:3 savers get side bars.",
+            ),
+            (
+                "Stretch — fill the screen",
+                "stretch",
+                "Scale the saver with gamescope and stretch it to fill the screen. Walls look wider.",
+            ),
+            (
+                "Widescreen — native 16:9",
+                "widescreen",
+                "Keep the window at the screen size so the 3D view is truly widescreen, not stretched 4:3.",
+            ),
+        ):
+            self.scale_mode.addItem(label, value)
+            self.scale_mode.setItemData(self.scale_mode.count() - 1, tip, Qt.ItemDataRole.ToolTipRole)
+            if value in ("fit", "stretch") and not has_gamescope:
+                model = self.scale_mode.model()
+                if isinstance(model, QStandardItemModel):
+                    item = model.item(self.scale_mode.count() - 1)
+                    if isinstance(item, QStandardItem):
+                        item.setEnabled(False)
+                        item.setToolTip("Install the gamescope package to use this.")
+        self.scale_mode.setToolTip(
+            "How to handle savers that switch to a low resolution (3D Maze). "
+            "Fit and Stretch need gamescope. Widescreen keeps a 1920×1080 view."
+        )
+        self.scale_mode.currentIndexChanged.connect(self._save_gamescope)
+        display_form.addRow("Scaling", self.scale_mode)
+        self.gamescope_res = QComboBox()
+        for label, value in (
+            ("640 × 480", "640x480"),
+            ("800 × 600", "800x600"),
+            ("1024 × 768", "1024x768"),
+            ("Screen size", ""),
+        ):
+            self.gamescope_res.addItem(label, value)
+        self.gamescope_res.setToolTip(
+            "Wine runs at this size inside gamescope, then it is scaled up to the screen. "
+            "Match the mode the saver switches to (3D Maze uses 640 × 480). Used by Fit and Stretch."
+        )
+        self.gamescope_res.currentIndexChanged.connect(self._save_gamescope)
+        display_form.addRow("Render at", self.gamescope_res)
         right.addWidget(display)
 
         tools = QGroupBox("Wine tools")
@@ -330,6 +383,15 @@ class PrefixManagerDialog(QDialog):
         self.dpi.blockSignals(True)
         self.dpi.setValue(shown_dpi)
         self.dpi.blockSignals(False)
+        self.scale_mode.blockSignals(True)
+        mode_idx = self.scale_mode.findData(rec.gamescope_mode)
+        self.scale_mode.setCurrentIndex(mode_idx if mode_idx >= 0 else 0)
+        self.scale_mode.blockSignals(False)
+        self.gamescope_res.blockSignals(True)
+        res_idx = self.gamescope_res.findData(rec.gamescope_resolution)
+        self.gamescope_res.setCurrentIndex(res_idx if res_idx >= 0 else 0)
+        self.gamescope_res.blockSignals(False)
+        self.gamescope_res.setEnabled(str(self.scale_mode.currentData() or "") in ("fit", "stretch"))
         self._update_slider_label(percent)
         if self._is_default():
             self.delete_btn.setText("Delete this prefix…")
@@ -415,6 +477,19 @@ class PrefixManagerDialog(QDialog):
             wineutil.set_log_pixels(self._session(), rec.dpi)
         except Exception as exc:
             QMessageBox.warning(self, "Wine DPI", str(exc))
+
+    def _save_gamescope(self) -> None:
+        if self._loading or not self._current_name():
+            return
+        rec = self._record()
+        mode = str(self.scale_mode.currentData() or "off")
+        if mode not in ("off", "fit", "stretch", "widescreen"):
+            mode = "off"
+        rec.gamescope_mode = mode  # type: ignore[assignment]
+        rec.gamescope_scale = mode in ("fit", "stretch")
+        rec.gamescope_resolution = str(self.gamescope_res.currentData() or "")
+        self.gamescope_res.setEnabled(mode in ("fit", "stretch"))
+        save_config(self.cfg)
 
     def _winecfg(self) -> None:
         try:

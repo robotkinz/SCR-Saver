@@ -50,6 +50,10 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config()
     save_config(cfg)
+    from . import debug as debuglog
+
+    debuglog.install_qt_handler()
+    debuglog.apply_debug_logging(bool(cfg.debug_mode))
     controller = SaverController(cfg)
     window = MainWindow(controller, show_window=not args.background)
     server.newConnection.connect(lambda: _on_second_instance(server, window))
@@ -112,6 +116,9 @@ def _setup_logging() -> None:
     handler.setFormatter(fmt)
     stream = logging.StreamHandler()
     stream.setFormatter(fmt)
+    # Wine stderr already goes to wine.log; copying it here rotates the app log away in seconds.
+    for h in (handler, stream):
+        h.addFilter(lambda record: record.name != "scrsaver.wine")
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.addHandler(handler)
@@ -150,7 +157,6 @@ def _take_singleton() -> QLocalServer | None:
     server = QLocalServer()
     if not server.listen(SINGLETON_NAME):
         log.warning("Could not listen on singleton socket: %s", server.errorString())
-        return server
     return server
 
 

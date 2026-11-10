@@ -111,6 +111,9 @@ def client_is_running() -> bool:
 
 
 def launch_app(appid: str) -> None:
+    from .wineutil import wait_for_cleanup
+
+    wait_for_cleanup()
     binary = steam_binary()
     if not binary:
         raise FileNotFoundError("Steam was not found. Install Steam or add it to PATH.")

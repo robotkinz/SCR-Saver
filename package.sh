@@ -67,6 +67,16 @@ if [ -f "$ROOT/native/build-afterdark-cfg.sh" ]; then
   cp "$ROOT/native/build-afterdark-cfg.sh" "$STAGE/native/build-afterdark-cfg.sh"
   chmod +x "$STAGE/native/build-afterdark-cfg.sh"
 fi
+if [ -f "$ROOT/native/scrsaver_fillwnd.c" ]; then
+  cp "$ROOT/native/scrsaver_fillwnd.c" "$STAGE/native/scrsaver_fillwnd.c"
+fi
+if [ -f "$ROOT/native/scrsaver_fillwnd.exe" ]; then
+  cp "$ROOT/native/scrsaver_fillwnd.exe" "$STAGE/native/scrsaver_fillwnd.exe"
+fi
+if [ -f "$ROOT/native/build-fillwnd.sh" ]; then
+  cp "$ROOT/native/build-fillwnd.sh" "$STAGE/native/build-fillwnd.sh"
+  chmod +x "$STAGE/native/build-fillwnd.sh"
+fi
 if [ -f "$ROOT/Makefile" ]; then
   cp "$ROOT/Makefile" "$STAGE/Makefile"
 fi

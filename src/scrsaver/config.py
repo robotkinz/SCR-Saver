@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -14,6 +15,7 @@ log = logging.getLogger(__name__)
 
 PlayMode = Literal["random", "selected"]
 RotateMode = Literal["random", "list"]
+ScaleMode = Literal["off", "fit", "stretch", "widescreen"]
 
 
 LAUNCH_LIBRARY = ""
@@ -81,6 +83,9 @@ class ManagedPrefix:
     source_path: str = ""
     steam_appid: str = ""
     wine_arch: str = ""
+    gamescope_scale: bool = False
+    gamescope_resolution: str = "640x480"
+    gamescope_mode: ScaleMode = "off"
 
     def is_imported(self) -> bool:
         return self.origin in (ORIGIN_IMPORTED, ORIGIN_STEAM) or bool(self.source_path)
@@ -107,6 +112,7 @@ class AppConfig:
     rotate_savers: bool = False
     rotate_seconds: int = 60
     rotate_mode: RotateMode = "random"
+    debug_mode: bool = False
     managed_prefixes: list[ManagedPrefix] = field(default_factory=list)
     screensavers: list[ScreensaverEntry] = field(default_factory=list)
 
@@ -125,8 +131,6 @@ class AppConfig:
             return None
         if self.play_mode == "selected":
             selected = self.entry_by_id(self.selected_id)
-            if selected and selected in enabled:
-                return selected
             if selected and selected.is_playable():
                 return selected
         import random
@@ -168,6 +172,23 @@ def _coerce_wine_arch(value: Any) -> str:
     if text in ("win32", "win64"):
         return text
     return ""
+
+
+def _coerce_scale_mode(value: Any, scaled: bool = False) -> ScaleMode:
+    text = str(value or "").strip().lower()
+    if text in ("off", "fit", "stretch", "widescreen"):
+        return text  # type: ignore[return-value]
+    return "fit" if scaled else "off"
+
+
+def _coerce_resolution(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    width, _, height = text.partition("x")
+    if width.isdigit() and height.isdigit() and 320 <= int(width) <= 7680 and 240 <= int(height) <= 4320:
+        return f"{int(width)}x{int(height)}"
+    return "640x480"
 
 
 def _coerce_int(value: Any, default: int, minimum: int, maximum: int) -> int:
@@ -219,6 +240,17 @@ def default_config() -> AppConfig:
     return AppConfig()
 
 
+def _keep_bad_config(path: Path) -> None:
+    # Defaults get saved next; move the unreadable file aside so the library list can be recovered.
+    bad = path.with_name(f"{path.name}.bad-{time.strftime('%Y%m%d-%H%M%S')}")
+    try:
+        os.replace(path, bad)
+    except OSError as exc:
+        log.error("Could not move unreadable config %s aside: %s", path, exc)
+        return
+    log.warning("Unreadable config kept as %s", bad)
+
+
 def load_config() -> AppConfig:
     path = paths.config_file()
     if not path.is_file():
@@ -227,8 +259,10 @@ def load_config() -> AppConfig:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         log.warning("Could not read config, using defaults: %s", exc)
+        _keep_bad_config(path)
         return default_config()
     if not isinstance(raw, dict):
+        _keep_bad_config(path)
         return default_config()
 
     play_mode = raw.get("play_mode", "random")
@@ -260,6 +294,11 @@ def load_config() -> AppConfig:
                 source_path=str(item.get("source_path") or ""),
                 steam_appid=str(item.get("steam_appid") or ""),
                 wine_arch=_coerce_wine_arch(item.get("wine_arch")),
+                gamescope_scale=bool(item.get("gamescope_scale", False)),
+                gamescope_resolution=_coerce_resolution(item.get("gamescope_resolution", "640x480")),
+                gamescope_mode=_coerce_scale_mode(
+                    item.get("gamescope_mode"), bool(item.get("gamescope_scale", False))
+                ),
             )
         )
 
@@ -319,6 +358,7 @@ def load_config() -> AppConfig:
         rotate_savers=bool(raw.get("rotate_savers", False)),
         rotate_seconds=_coerce_int(raw.get("rotate_seconds"), 60, 60, 180 * 60),
         rotate_mode=rotate_mode,
+        debug_mode=bool(raw.get("debug_mode", False)),
         managed_prefixes=managed,
         screensavers=entries,
     )

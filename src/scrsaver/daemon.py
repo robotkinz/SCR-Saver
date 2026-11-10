@@ -9,8 +9,7 @@ from .config import AppConfig, save_config
 from .fullscreen import fullscreen_outputs
 from .idle import IdleMonitor
 from .inhibit import IdleInhibit
-from .player import GRACE_SECONDS, Player
-from . import wineutil
+from .player import GRACE_SECONDS, Player, macro_seconds
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +38,7 @@ class SaverController(QObject):
         self.player.started.connect(self._on_started)
         self.player.stopped.connect(self._on_stopped)
         self.player.failed.connect(self._on_failed)
+        self.player.macro_interrupted.connect(self._on_macro_interrupted)
         self._audio_timer = QTimer(self)
         self._audio_timer.setInterval(1000)
         self._audio_timer.timeout.connect(self._tick_audio)
@@ -52,6 +52,9 @@ class SaverController(QObject):
     def apply_config(self) -> None:
         self.idle.set_timeout(self.cfg.timeout_seconds)
         self.idle.set_exit_key(self.cfg.interactive_exit_key)
+        from . import debug as debuglog
+
+        debuglog.apply_debug_logging(bool(self.cfg.debug_mode))
         save_config(self.cfg)
         if not self.cfg.enabled and self.player.is_playing() and not self._manual_play:
             self.player.stop()
@@ -75,14 +78,17 @@ class SaverController(QObject):
             skip = fullscreen_outputs()
             if skip:
                 log.info("Skipping displays with fullscreen video: %s", ", ".join(sorted(skip)))
-        extra = 0.0
-        if entry is not None:
-            strokes = getattr(entry, "keystrokes", None) or []
-            if strokes:
-                if getattr(entry, "keystroke_loop", False):
-                    extra = 24 * 3600.0
-                else:
-                    extra = max(float(item.get("t") or 0) for item in strokes) + 2.0
+        extra = macro_seconds(entry.keystrokes, entry.keystroke_loop)
+        log.debug(
+            "Play %s id=%s prefix=%r runner=%r interactive=%s manual=%s display=%s",
+            entry.name,
+            entry.id,
+            getattr(entry, "wine_prefix", "") or "",
+            getattr(entry, "wine_runner", "") or "",
+            bool(getattr(entry, "interactive", False)),
+            manual,
+            self.cfg.display_mode,
+        )
         self.idle.ignore_for(GRACE_SECONDS + 0.4 + extra)
         audio_source = ""
         if self.cfg.one_audio_source and self.cfg.display_mode == "all":
@@ -102,11 +108,12 @@ class SaverController(QObject):
             ),
         )
 
-    def stop_playback(self) -> None:
+    def stop_playback(self, background: bool = False) -> None:
         self._rotate_timer.stop()
         self._rotating = False
         self._manual_play = False
-        self.player.stop()
+        self.player.stop(background=background)
+        self.idle.ignore_for(0)
         self.idle.bump()
 
     def shutdown(self) -> None:
@@ -136,12 +143,21 @@ class SaverController(QObject):
             return
         if self.player.is_playing():
             log.info("Input detected, stopping screensaver")
-            self.stop_playback()
+            self.stop_playback(background=True)
+
+    def _on_macro_interrupted(self) -> None:
+        # Idle input is ignored while autoplay runs; the macro's own input check is the dismiss.
+        if self.player.is_playing() and not self.player.is_interactive():
+            log.info("Input during autoplay, stopping screensaver")
+            self.stop_playback(background=True)
 
     def _on_escape(self) -> None:
-        if self.player.is_playing() and self.player.is_interactive():
-            log.info("Escape pressed, stopping interactive demo")
-            self.stop_playback()
+        # Autoplay ignores mouse/keyboard while it runs, so the exit key must stop it.
+        if self.player.is_playing() and (
+            self.player.is_interactive() or self.player.macro_duration() > 0
+        ):
+            log.info("Exit key pressed, stopping screensaver")
+            self.stop_playback(background=True)
 
     def _on_started(self, name: str) -> None:
         log.info("Playing %s", name)
@@ -159,6 +175,7 @@ class SaverController(QObject):
         self._rotate_timer.stop()
         self._inhibit.release()
         self._manual_play = False
+        self.idle.ignore_for(0)
         self.idle.bump()
         self.state_changed.emit()
 
@@ -191,19 +208,17 @@ class SaverController(QObject):
     def _tick_audio(self) -> None:
         if not self.player.is_playing():
             return
-        pids: set[int] = set()
-        for session in self.player.wine_sessions():
-            pids.update(wineutil.list_prefix_pids(session))
         apply_screensaver_audio(
             mute=self.cfg.mute_screensaver_audio or int(self.cfg.fps_limit or 0) > 0,
             duck_percent=self.cfg.duck_percent,
-            wine_pids=pids,
+            wine_pids=self.player.prefix_pids(),
             muted_pids=self.player.muted_audio_pids(),
         )
 
     def _on_failed(self, message: str) -> None:
         self._rotate_timer.stop()
         self._rotating = False
+        self.idle.ignore_for(0)
         self._inhibit.release()
         self._manual_play = False
         self.error.emit(message)

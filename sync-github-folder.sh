@@ -53,6 +53,12 @@ fi
 if [[ -f "$DEST/native/afterdark_cfg.exe" ]]; then
   chmod +x "$DEST/native/afterdark_cfg.exe" || true
 fi
+if [[ -f "$DEST/native/scrsaver_fillwnd.exe" ]]; then
+  chmod +x "$DEST/native/scrsaver_fillwnd.exe" || true
+fi
+if [[ -f "$DEST/native/build-fillwnd.sh" ]]; then
+  chmod +x "$DEST/native/build-fillwnd.sh" || true
+fi
 if [[ -f "$DEST/native/build-afterdark-cfg.sh" ]]; then
   chmod +x "$DEST/native/build-afterdark-cfg.sh" || true
 fi
