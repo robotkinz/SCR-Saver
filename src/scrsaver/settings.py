@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSlider,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -43,25 +44,36 @@ class AdditionalSettingsDialog(QDialog):
         self._apply_config = apply_config
         self._loading = False
         self.setWindowTitle("Additional Settings")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(520)
+        self.setMinimumHeight(420)
         self._build()
         self._load()
 
     def _build(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
-        intro = QLabel(
-            "These options apply to every installed screensaver. "
-            "Use this window for audio, fullscreen video, interactive keys, "
-            "and Windows installers that are not a plain .scr file."
-        )
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        tabs.setTabPosition(QTabWidget.TabPosition.North)
+        layout.addWidget(tabs, 1)
 
-        audio = QGroupBox("Audio")
-        audio_form = QFormLayout(audio)
+        # --- Tab 1: Audio ---
+        audio_tab = QWidget()
+        audio_layout = QVBoxLayout(audio_tab)
+        audio_layout.setContentsMargins(12, 12, 12, 12)
+        audio_layout.setSpacing(10)
+
+        audio_group = QGroupBox("Audio")
+        audio_form = QFormLayout(audio_group)
+        audio_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        audio_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
         self.mute_box = QCheckBox("Mute screensaver audio")
         self.mute_box.toggled.connect(self._save)
+        audio_form.addRow(self.mute_box)
+
         self.duck_slider = QSlider(Qt.Orientation.Horizontal)
         self.duck_slider.setRange(0, 100)
         self.duck_slider.setTickInterval(10)
@@ -71,26 +83,49 @@ class AdditionalSettingsDialog(QDialog):
         duck_row = QHBoxLayout()
         duck_row.addWidget(self.duck_slider, 1)
         duck_row.addWidget(self.duck_label)
-        audio_form.addRow(self.mute_box)
         audio_form.addRow("When other audio is playing, lower screensaver to", duck_row)
+
         self.one_audio_box = QCheckBox(
             "When using All screens, only one display plays screensaver audio"
         )
         self.one_audio_box.toggled.connect(self._on_one_audio_toggled)
+        audio_form.addRow(self.one_audio_box)
+
         self.audio_source_combo = QComboBox()
         self.audio_source_combo.currentIndexChanged.connect(self._save)
-        audio_form.addRow(self.one_audio_box)
         audio_form.addRow("Play screensaver audio from", self.audio_source_combo)
-        layout.addWidget(audio)
 
-        pace = QGroupBox("Frame cap (all savers)")
-        pace_form = QFormLayout(pace)
+        audio_hint = QLabel(
+            "Ducking reduces screensaver volume while other applications play sound. "
+            "\"One audio source\" prevents overlapping audio when the same screensaver "
+            "runs on multiple monitors."
+        )
+        audio_hint.setWordWrap(True)
+        audio_form.addRow(audio_hint)
+
+        audio_layout.addWidget(audio_group)
+        audio_layout.addStretch(1)
+        tabs.addTab(audio_tab, "Audio")
+
+        # --- Tab 2: Display ---
+        display_tab = QWidget()
+        display_layout = QVBoxLayout(display_tab)
+        display_layout.setContentsMargins(12, 12, 12, 12)
+        display_layout.setSpacing(10)
+
+        # Frame cap
+        pace_group = QGroupBox("Frame cap (all savers)")
+        pace_form = QFormLayout(pace_group)
+        pace_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        pace_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
         self.fps_combo = QComboBox()
         self.fps_combo.addItem("Off (no frame cap)", 0)
         for fps in (8, 10, 12, 15, 20, 24, 30, 60):
             self.fps_combo.addItem(f"{fps} FPS", fps)
         self.fps_combo.currentIndexChanged.connect(self._save)
         pace_form.addRow("Smooth frame cap", self.fps_combo)
+
         pace_hint = QLabel(
             "Applies to every screensaver and demo. Paces OpenGL/Direct3D so motion "
             "stays even. Screensaver audio is muted while a cap is on, because sound "
@@ -99,16 +134,23 @@ class AdditionalSettingsDialog(QDialog):
         )
         pace_hint.setWordWrap(True)
         pace_form.addRow(pace_hint)
-        layout.addWidget(pace)
 
-        video = QGroupBox("Displays")
-        video_form = QFormLayout(video)
+        display_layout.addWidget(pace_group)
+
+        # Displays
+        video_group = QGroupBox("Displays")
+        video_form = QFormLayout(video_group)
+        video_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        video_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
         self.skip_fs = QCheckBox("Do not run a screensaver on a display that has fullscreen video")
         self.skip_fs.toggled.connect(self._save)
         video_form.addRow(self.skip_fs)
+
         self.rotate_box = QCheckBox("Switch to another screensaver after a set time")
         self.rotate_box.toggled.connect(self._on_rotate_toggled)
         video_form.addRow(self.rotate_box)
+
         self.rotate_spin = QSpinBox()
         self.rotate_spin.setRange(1, 180)
         self.rotate_spin.setSuffix(" minutes")
@@ -118,6 +160,7 @@ class AdditionalSettingsDialog(QDialog):
         rotate_spin_row.setContentsMargins(24, 0, 0, 0)
         rotate_spin_row.addWidget(self.rotate_spin)
         video_form.addRow("After", rotate_spin_wrap)
+
         self.rotate_combo = QComboBox()
         self.rotate_combo.addItem("Randomly", "random")
         self.rotate_combo.addItem("Down the list", "list")
@@ -127,9 +170,11 @@ class AdditionalSettingsDialog(QDialog):
         rotate_combo_row.setContentsMargins(24, 0, 0, 0)
         rotate_combo_row.addWidget(self.rotate_combo)
         video_form.addRow("Then play", rotate_combo_wrap)
+
         self.tile_box = QCheckBox("Tile the screensaver into empty space instead of filling the screen")
         self.tile_box.toggled.connect(self._on_tile_toggled)
         video_form.addRow(self.tile_box)
+
         self.tile_deco_box = QCheckBox(
             "Disable KDE window decorations for the tiled screensaver or demo"
         )
@@ -139,6 +184,7 @@ class AdditionalSettingsDialog(QDialog):
         deco_row.setContentsMargins(24, 0, 0, 0)
         deco_row.addWidget(self.tile_deco_box)
         video_form.addRow(deco_wrap)
+
         self.tile_scale_box = QCheckBox(
             "Scale the content so all of it fits in the tiled window"
         )
@@ -148,31 +194,30 @@ class AdditionalSettingsDialog(QDialog):
         scale_row.setContentsMargins(24, 0, 0, 0)
         scale_row.addWidget(self.tile_scale_box)
         video_form.addRow(scale_wrap)
+
         tile_hint = QLabel(
             "The saver sits in the largest gap between windows on the chosen display "
             "and grows to fill that gap. Panels stay visible. If a screen has no room, "
             "that screen is skipped. Decorations are the title bar and borders KWin "
-            "draws around the window. Scaling draws the saver at the display’s normal "
+            "draws around the window. Scaling draws the saver at the display's normal "
             "size and shrinks that picture into the gap so nothing is cropped."
         )
         tile_hint.setWordWrap(True)
         video_form.addRow(tile_hint)
-        layout.addWidget(video)
 
-        keys = QGroupBox("Interactive demos")
-        keys_form = QFormLayout(keys)
-        self.key_edit = QKeySequenceEdit()
-        if hasattr(self.key_edit, "setMaximumSequenceLength"):
-            self.key_edit.setMaximumSequenceLength(1)
-        self.key_edit.editingFinished.connect(self._on_key_changed)
-        keys_form.addRow("Exit shortcut", self.key_edit)
-        hint = QLabel("Click the field, then press the key you want. Default is Escape.")
-        hint.setWordWrap(True)
-        keys_form.addRow(hint)
-        layout.addWidget(keys)
+        display_layout.addWidget(video_group)
+        display_layout.addStretch(1)
+        tabs.addTab(display_tab, "Display")
 
-        prefix_box = QGroupBox("Wine prefixes")
-        prefix_layout = QVBoxLayout(prefix_box)
+        # --- Tab 3: Wine ---
+        wine_tab = QWidget()
+        wine_layout = QVBoxLayout(wine_tab)
+        wine_layout.setContentsMargins(12, 12, 12, 12)
+        wine_layout.setSpacing(10)
+
+        prefix_group = QGroupBox("Wine prefixes")
+        prefix_layout = QVBoxLayout(prefix_group)
+
         prefix_layout.addWidget(
             QLabel(
                 "Not every screensaver or demo will run in the default bottle. "
@@ -180,6 +225,7 @@ class AdditionalSettingsDialog(QDialog):
                 f"under {paths.data_dir()}."
             )
         )
+
         wizard_btn = QPushButton("Wine Prefix Wizard…")
         wizard_btn.clicked.connect(self._open_prefix_wizard)
         manage_btn = QPushButton("Manage prefixes…")
@@ -189,10 +235,10 @@ class AdditionalSettingsDialog(QDialog):
         prefix_btns.addWidget(manage_btn)
         prefix_btns.addStretch(1)
         prefix_layout.addLayout(prefix_btns)
-        layout.addWidget(prefix_box)
+        wine_layout.addWidget(prefix_group)
 
-        installer = QGroupBox("Windows installer")
-        inst_layout = QVBoxLayout(installer)
+        installer_group = QGroupBox("Windows installer")
+        inst_layout = QVBoxLayout(installer_group)
         inst_layout.addWidget(
             QLabel(
                 "Choose which Wine prefix receives the program. "
@@ -202,21 +248,56 @@ class AdditionalSettingsDialog(QDialog):
             )
         )
         form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
         self.prefix_combo = QComboBox()
         self.prefix_combo.currentIndexChanged.connect(self._on_install_prefix_changed)
         form.addRow("Install into prefix", self.prefix_combo)
         inst_layout.addLayout(form)
+
         run_btn = QPushButton("Run Windows installer…")
         run_btn.clicked.connect(self._run_installer)
         inst_layout.addWidget(run_btn, alignment=Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(installer)
+        wine_layout.addWidget(installer_group)
+
         self._fill_prefix_combo()
 
-        debug_box = QGroupBox("Troubleshooting")
-        debug_layout = QVBoxLayout(debug_box)
+        wine_layout.addStretch(1)
+        tabs.addTab(wine_tab, "Wine")
+
+        # --- Tab 4: Advanced ---
+        advanced_tab = QWidget()
+        advanced_layout = QVBoxLayout(advanced_tab)
+        advanced_layout.setContentsMargins(12, 12, 12, 12)
+        advanced_layout.setSpacing(10)
+
+        # Interactive demos
+        keys_group = QGroupBox("Interactive demos")
+        keys_form = QFormLayout(keys_group)
+        keys_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        keys_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.key_edit = QKeySequenceEdit()
+        if hasattr(self.key_edit, "setMaximumSequenceLength"):
+            self.key_edit.setMaximumSequenceLength(1)
+        self.key_edit.editingFinished.connect(self._on_key_changed)
+        keys_form.addRow("Exit shortcut", self.key_edit)
+
+        hint = QLabel("Click the field, then press the key you want. Default is Escape.")
+        hint.setWordWrap(True)
+        keys_form.addRow(hint)
+
+        advanced_layout.addWidget(keys_group)
+
+        # Troubleshooting
+        debug_group = QGroupBox("Troubleshooting")
+        debug_layout = QVBoxLayout(debug_group)
+
         self.debug_box = QCheckBox("Log everything in real time")
         self.debug_box.toggled.connect(self._on_debug_toggled)
         debug_layout.addWidget(self.debug_box)
+
         debug_hint = QLabel(
             "Writes detailed SCR Saver messages plus Wine errors and warnings. "
             "Open the live log, then Test a screensaver. "
@@ -224,6 +305,7 @@ class AdditionalSettingsDialog(QDialog):
         )
         debug_hint.setWordWrap(True)
         debug_layout.addWidget(debug_hint)
+
         debug_btns = QHBoxLayout()
         live_btn = QPushButton("Show live log…")
         live_btn.clicked.connect(self._open_live_log)
@@ -233,8 +315,12 @@ class AdditionalSettingsDialog(QDialog):
         debug_btns.addWidget(folder_btn)
         debug_btns.addStretch(1)
         debug_layout.addLayout(debug_btns)
-        layout.addWidget(debug_box)
 
+        advanced_layout.addWidget(debug_group)
+        advanced_layout.addStretch(1)
+        tabs.addTab(advanced_tab, "Advanced")
+
+        # Close button
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)

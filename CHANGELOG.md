@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.13-alpha — 2026-11-11
+
+- Additional Settings is split into Audio, Display, Wine, and Advanced tabs
+- Manage Wine prefixes is split into Performance, Display, and Wine Tools tabs
+- Hint text in the main window and Additional Settings uses the same color as the other labels
+- Manage Wine prefixes no longer crashes after the window is closed
+
 ## 0.1.12-alpha — 2026-11-10
 
 - Per-prefix Scaling for 640×480 savers such as 3D Maze: Off, Fit (4:3 with bars), Stretch, or Widescreen

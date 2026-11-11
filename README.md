@@ -12,6 +12,7 @@ This is a public alpha. Expect rough edges, especially around autoplay, Proton g
 - Optionally switch to another checkmarked screensaver after a set time
 - Wine and Proton runners: system Wine, Steam Proton, Proton-GE, Lutris, Heroic, Bottles, PlayOnLinux
 - Extra Wine prefixes with CPU slowdown and a global frame cap
+- Tabbed Additional Settings (Audio, Display, Wine, Advanced) and Manage Wine prefixes (Performance, Display, Wine Tools)
 - Per-prefix Scaling for low-resolution savers: Off, Fit, Stretch, or Widescreen
 - Import a Windows program by EXE (Heroic layouts included) or an installed Steam game
 - Record keys, mouse movement, and clicks, then replay them when a demo starts
@@ -118,7 +119,7 @@ Unpack onto a Linux filesystem. A new Wine prefix is created there.
 
 Right-click a list item for Wine/Proton, winecfg, Winetricks, Wine uninstaller, interactive demo, and **Record autoplay input…**.
 
-Right-click the tray icon for **Additional Settings**: audio, fullscreen-video skip, window tiling, interactive exit key, Wine Prefix Wizard, **Manage prefixes**, and a Windows installer into a chosen bottle.
+Right-click the tray icon for **Additional Settings** (Audio, Display, Wine, Advanced tabs): audio, fullscreen-video skip, window tiling, interactive exit key, Wine Prefix Wizard, **Manage prefixes**, and a Windows installer into a chosen bottle.
 
 **Tile the screensaver into empty space** sits under the fullscreen-video skip option. The saver fills the largest gap between windows on the chosen display and leaves KDE panels alone. Nested checkboxes can hide the title bar and borders, and scale the full-size picture into the gap so nothing is cropped. Scaling needs `gamescope`. A screen is skipped if the remaining gap is smaller than 400×300.
 

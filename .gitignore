@@ -18,3 +18,6 @@ user-data/
 *.swp
 *~
 .DS_Store
+.hermes.md
+HANDOFF.md
+PRODUCT.md

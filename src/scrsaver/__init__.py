@@ -1,3 +1,3 @@
 """SCR Saver — play Windows .scr screensavers on Linux when idle."""
 
-__version__ = "0.1.12-alpha"
+__version__ = "0.1.13-alpha"

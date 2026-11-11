@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSlider,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -56,15 +57,32 @@ class PrefixManagerDialog(QDialog):
         self._reload_list()
 
     def _build(self) -> None:
-        root = QHBoxLayout(self)
-        left = QVBoxLayout()
-        left.addWidget(QLabel("Prefixes"))
+        # Use native Plasma theme like Additional Settings — no custom stylesheet
+        self.setStyleSheet("")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+
+        # Top splitter: left prefix list + right panel
+        splitter_layout = QHBoxLayout()
+        splitter_layout.setSpacing(12)
+
+        # --- Left: Prefix list + import buttons ---
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+
+        left_layout.addWidget(QLabel("Prefixes"))
         self.list = QListWidget()
         self.list.currentItemChanged.connect(self._on_select)
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._on_prefix_menu)
-        left.addWidget(self.list, 1)
+        left_layout.addWidget(self.list, 1)
+
         import_row = QHBoxLayout()
+        import_row.setSpacing(8)
         self.import_btn = QPushButton("Import prefix…")
         self.import_btn.setToolTip(
             "Pick a Windows .exe. Heroic games under ~/Games/Heroic keep their "
@@ -79,9 +97,11 @@ class PrefixManagerDialog(QDialog):
         self.steam_btn.clicked.connect(self._import_steam)
         import_row.addWidget(self.import_btn)
         import_row.addWidget(self.steam_btn)
-        left.addLayout(import_row)
-        left.addWidget(QLabel("Compatibility scripts"))
+        left_layout.addLayout(import_row)
+
+        left_layout.addWidget(QLabel("Compatibility scripts"))
         script_row = QHBoxLayout()
+        script_row.setSpacing(8)
         self.script_import_btn = QPushButton("Import script…")
         self.script_import_btn.setToolTip(
             "Load a shared recipe: Winetricks packages, screensaver settings, "
@@ -96,21 +116,56 @@ class PrefixManagerDialog(QDialog):
         self.script_export_btn.clicked.connect(self._export_script)
         script_row.addWidget(self.script_import_btn)
         script_row.addWidget(self.script_export_btn)
-        left.addLayout(script_row)
-        root.addLayout(left, 2)
+        left_layout.addLayout(script_row)
 
-        right = QVBoxLayout()
+        splitter_layout.addWidget(left, 2)
+
+        # --- Right: Persistent header + tabbed content ---
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
+
+        splitter_layout.addWidget(right, 3)
+
+        # Persistent header (always visible)
+        self.header = QWidget()
+        header_layout = QVBoxLayout(self.header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(4)
+
         self.title = QLabel("Select a prefix")
         title_font = self.title.font()
         title_font.setBold(True)
+        title_font.setPointSize(11)
         self.title.setFont(title_font)
+
         self.detail = QLabel()
         self.detail.setWordWrap(True)
-        right.addWidget(self.title)
-        right.addWidget(self.detail)
+
+        header_layout.addWidget(self.title)
+        header_layout.addWidget(self.detail)
+
+        right_layout.addWidget(self.header)
+
+        # Tab widget with three tabs
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        right_layout.addWidget(self.tabs, 1)
+
+        # --- Tab 1: Performance ---
+        perf_tab = QWidget()
+        perf_layout = QVBoxLayout(perf_tab)
+        perf_layout.setContentsMargins(12, 12, 12, 12)
+        perf_layout.setSpacing(10)
 
         speed = QGroupBox("Clock speed")
         speed_form = QFormLayout(speed)
+        speed_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        speed_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        speed_form.setContentsMargins(12, 16, 12, 12)
+        speed_form.setSpacing(10)
+
         host = host_max_mhz()
         win31 = win31_quota_percent()
         hint = QLabel(
@@ -123,6 +178,7 @@ class PrefixManagerDialog(QDialog):
         )
         hint.setWordWrap(True)
         speed_form.addRow(hint)
+
         self.preset = QComboBox()
         self.preset.addItem("Full speed", 100)
         self.preset.addItem("Noticeably slower (half a modern core)", 50)
@@ -131,28 +187,48 @@ class PrefixManagerDialog(QDialog):
         self.preset.addItem("Custom", -1)
         self.preset.currentIndexChanged.connect(self._on_preset)
         speed_form.addRow("Feel", self.preset)
+
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(1, 100)
         self.slider.setValue(100)
         self.slider.valueChanged.connect(self._on_slider)
         self.slider_label = QLabel("100% of one CPU")
+        self.slider_label.setMinimumWidth(140)
         row = QHBoxLayout()
+        row.setSpacing(8)
         row.addWidget(self.slider, 1)
         row.addWidget(self.slider_label)
         speed_form.addRow("CPU quota", row)
+
         self.single_core = QCheckBox("Pretend this is a single-core PC (Windows 98-style)")
         self.single_core.toggled.connect(self._save_speed)
         speed_form.addRow(self.single_core)
+
         fps_note = QLabel(
             "A smooth frame cap for every saver is in Additional Settings. "
             "Use that for 3D Maze; CPU quota here is still per bottle."
         )
         fps_note.setWordWrap(True)
         speed_form.addRow(fps_note)
-        right.addWidget(speed)
 
-        display = QGroupBox("Display")
-        display_form = QFormLayout(display)
+        perf_layout.addWidget(speed)
+        perf_layout.addStretch(1)
+
+        self.tabs.addTab(perf_tab, "Performance")
+
+        # --- Tab 2: Display ---
+        display_tab = QWidget()
+        display_layout = QVBoxLayout(display_tab)
+        display_layout.setContentsMargins(12, 12, 12, 12)
+        display_layout.setSpacing(10)
+
+        display_group = QGroupBox("Display")
+        display_form = QFormLayout(display_group)
+        display_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        display_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        display_form.setContentsMargins(12, 16, 12, 12)
+        display_form.setSpacing(10)
+
         dpi_hint = QLabel(
             "Some 3D savers (Space, Inside your Computer) need a DPI other than 96 "
             "to fill the screen. Set it here. Wine configuration does not resize "
@@ -160,6 +236,7 @@ class PrefixManagerDialog(QDialog):
         )
         dpi_hint.setWordWrap(True)
         display_form.addRow(dpi_hint)
+
         self.dpi = QSpinBox()
         self.dpi.setRange(wineutil.WINE_DEFAULT_DPI, 480)
         self.dpi.setSuffix(" DPI")
@@ -168,6 +245,7 @@ class PrefixManagerDialog(QDialog):
         )
         self.dpi.valueChanged.connect(self._save_dpi)
         display_form.addRow("DPI", self.dpi)
+
         self.scale_mode = QComboBox()
         has_gamescope = bool(shutil.which("gamescope"))
         for label, value, tip in (
@@ -207,6 +285,7 @@ class PrefixManagerDialog(QDialog):
         )
         self.scale_mode.currentIndexChanged.connect(self._save_gamescope)
         display_form.addRow("Scaling", self.scale_mode)
+
         self.gamescope_res = QComboBox()
         for label, value in (
             ("640 × 480", "640x480"),
@@ -221,10 +300,26 @@ class PrefixManagerDialog(QDialog):
         )
         self.gamescope_res.currentIndexChanged.connect(self._save_gamescope)
         display_form.addRow("Render at", self.gamescope_res)
-        right.addWidget(display)
 
-        tools = QGroupBox("Wine tools")
-        tools_l = QHBoxLayout(tools)
+        display_layout.addWidget(display_group)
+        display_layout.addStretch(1)
+
+        self.tabs.addTab(display_tab, "Display")
+
+        # --- Tab 3: Wine Tools ---
+        tools_tab = QWidget()
+        tools_layout = QVBoxLayout(tools_tab)
+        tools_layout.setContentsMargins(12, 12, 12, 12)
+        tools_layout.setSpacing(10)
+
+        tools_group = QGroupBox("Wine tools")
+        tools_inner = QVBoxLayout(tools_group)
+        tools_inner.setContentsMargins(12, 16, 12, 12)
+        tools_inner.setSpacing(10)
+
+        tools_buttons = QHBoxLayout()
+        tools_buttons.setSpacing(8)
+
         self.winecfg_btn = QPushButton("Wine configuration…")
         self.winecfg_btn.clicked.connect(self._winecfg)
         self.tricks_btn = QPushButton("Winetricks…")
@@ -235,29 +330,45 @@ class PrefixManagerDialog(QDialog):
         self.uninst_btn.clicked.connect(self._uninstaller)
         self.folder_btn = QPushButton("Open folder")
         self.folder_btn.clicked.connect(self._open_folder)
-        tools_l.addWidget(self.winecfg_btn)
-        tools_l.addWidget(self.tricks_btn)
-        tools_l.addWidget(self.uninst_btn)
-        tools_l.addWidget(self.folder_btn)
-        right.addWidget(tools)
 
+        tools_buttons.addWidget(self.winecfg_btn)
+        tools_buttons.addWidget(self.tricks_btn)
+        tools_buttons.addWidget(self.uninst_btn)
+        tools_buttons.addWidget(self.folder_btn)
+        tools_buttons.addStretch(1)
+
+        tools_inner.addLayout(tools_buttons)
+
+        tools_layout.addWidget(tools_group)
+
+        # Delete/Remove button (moved here, full width)
         self.delete_btn = QPushButton("Delete this prefix…")
         self.delete_btn.clicked.connect(self._remove_prefix)
-        right.addWidget(self.delete_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        tools_layout.addWidget(self.delete_btn)
+
         hint = QLabel(
             "Right-click a prefix to remove it from this list. "
             "Only bottles created under ~/.local/share/scrsaver/ can be deleted from disk. "
             "Imported and Steam bottles are delisted. The default bottle stays."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid);")
-        right.addWidget(hint)
-        right.addStretch(1)
+        tools_layout.addWidget(hint)
 
-        close = QPushButton("Close")
-        close.clicked.connect(self.accept)
-        right.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
-        root.addLayout(right, 3)
+        tools_layout.addStretch(1)
+
+        self.tabs.addTab(tools_tab, "Wine Tools")
+
+        # --- Bottom button row (single row, spans full width) ---
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(8)
+        bottom_row.addStretch(1)
+
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.accept)
+        bottom_row.addWidget(self.close_btn)
+
+        root.addLayout(splitter_layout, 1)
+        root.addLayout(bottom_row)
 
     def _reload_list(self, select: str | None = None) -> None:
         current = select
@@ -336,6 +447,12 @@ class PrefixManagerDialog(QDialog):
         return paths.is_under_data_dir(folder)
 
     def _on_select(self) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.title.text()
+        except RuntimeError:
+            return
+
         name = self._current_name()
         if not name:
             return
@@ -410,6 +527,11 @@ class PrefixManagerDialog(QDialog):
         self._loading = False
 
     def _on_preset(self) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.preset.currentData()
+        except RuntimeError:
+            return
         value = int(self.preset.currentData() or -1)
         if value < 0:
             return
@@ -433,6 +555,11 @@ class PrefixManagerDialog(QDialog):
         self._save_speed()
 
     def _on_slider(self, value: int) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.slider.value()
+        except RuntimeError:
+            return
         self._update_slider_label(float(value))
         preset = self.preset.findData(value)
         self.preset.blockSignals(True)
@@ -441,6 +568,11 @@ class PrefixManagerDialog(QDialog):
         self._save_speed()
 
     def _update_slider_label(self, percent: float) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.slider_label.text()
+        except RuntimeError:
+            return
         mhz = estimated_mhz(percent)
         extra = ""
         if abs(percent - win31_quota_percent()) <= 0.15:
@@ -456,6 +588,11 @@ class PrefixManagerDialog(QDialog):
         self.slider_label.setText(f"{quota} of one CPU  ·  ≈ {mhz:.0f} MHz{extra}")
 
     def _save_speed(self) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.slider.value()
+        except RuntimeError:
+            return
         if self._loading or not self._current_name():
             return
         rec = self._record()
@@ -468,6 +605,11 @@ class PrefixManagerDialog(QDialog):
         save_config(self.cfg)
 
     def _save_dpi(self) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.dpi.value()
+        except RuntimeError:
+            return
         if self._loading or not self._current_name():
             return
         rec = self._record()
@@ -479,6 +621,11 @@ class PrefixManagerDialog(QDialog):
             QMessageBox.warning(self, "Wine DPI", str(exc))
 
     def _save_gamescope(self) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.scale_mode.currentData()
+        except RuntimeError:
+            return
         if self._loading or not self._current_name():
             return
         rec = self._record()
@@ -492,24 +639,44 @@ class PrefixManagerDialog(QDialog):
         save_config(self.cfg)
 
     def _winecfg(self) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.winecfg_btn.isEnabled()
+        except RuntimeError:
+            return
         try:
             wineutil.open_winecfg(self._session())
         except Exception as exc:
             QMessageBox.warning(self, "Wine configuration", str(exc))
 
     def _winetricks(self) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.tricks_btn.isEnabled()
+        except RuntimeError:
+            return
         try:
             wineutil.open_winetricks(self._session())
         except Exception as exc:
             QMessageBox.warning(self, "Winetricks", str(exc))
 
     def _uninstaller(self) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.uninst_btn.isEnabled()
+        except RuntimeError:
+            return
         try:
             wineutil.launch_wine_uninstaller_gui(self._session())
         except Exception as exc:
             QMessageBox.warning(self, "Wine uninstaller", str(exc))
 
     def _open_folder(self) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.folder_btn.isEnabled()
+        except RuntimeError:
+            return
         try:
             session = self._session()
         except Exception as exc:
@@ -519,6 +686,11 @@ class PrefixManagerDialog(QDialog):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(session.prefix)))
 
     def _on_prefix_menu(self, pos) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.list.itemAt(pos)
+        except RuntimeError:
+            return
         item = self.list.itemAt(pos)
         if item is None:
             return
@@ -533,6 +705,11 @@ class PrefixManagerDialog(QDialog):
         menu.exec(self.list.mapToGlobal(pos))
 
     def _import_prefix(self) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.import_btn.isEnabled()
+        except RuntimeError:
+            return
         start = heroic.default_install_dir() or Path.home()
         chosen, _filter = QFileDialog.getOpenFileName(
             self,
@@ -568,6 +745,11 @@ class PrefixManagerDialog(QDialog):
         self._reload_list(select=rec.name)
 
     def _import_steam(self) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.steam_btn.isEnabled()
+        except RuntimeError:
+            return
         if steam.steam_binary() is None:
             QMessageBox.warning(
                 self,
@@ -618,6 +800,11 @@ class PrefixManagerDialog(QDialog):
         )
 
     def _import_script(self) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.script_import_btn.isEnabled()
+        except RuntimeError:
+            return
         from .profile_dialog import pick_and_import
 
         pick_and_import(
@@ -630,6 +817,11 @@ class PrefixManagerDialog(QDialog):
         self._reload_list(select=self._current_name() or None)
 
     def _export_script(self) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.script_export_btn.isEnabled()
+        except RuntimeError:
+            return
         from .profile_dialog import export_current_prefix
 
         export_current_prefix(self.cfg, self, self._current_name())
@@ -639,6 +831,11 @@ class PrefixManagerDialog(QDialog):
             self._library_changed()
 
     def _remove_prefix(self) -> None:
+        # Guard: C++ object may have been deleted if dialog was closed
+        try:
+            _ = self.delete_btn.isEnabled()
+        except RuntimeError:
+            return
         if self._is_default():
             QMessageBox.information(
                 self,

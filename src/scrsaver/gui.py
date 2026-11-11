@@ -199,7 +199,6 @@ class MainWindow(QMainWindow):
         title.setFont(title_font)
         subtitle = QLabel("Import Windows .scr files and play them when this computer is idle.")
         subtitle.setWordWrap(True)
-        subtitle.setStyleSheet("color: palette(mid);")
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
